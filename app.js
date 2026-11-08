@@ -1,823 +1,421 @@
-let allQuestions = []; // parsed.jsonl の全データ
-let questions = []; // フィルター合致出題リスト
-let currentIndex = 0;
-let score = { correct: 0, total: 0 };
-let slots = [];
-let timerSeconds = 0;
-let timerInterval = null;
+"use strict";
 
-const STORAGE_KEY = "toefl_bas_storage_v1";
+const STORAGE_KEY = "toefl_listen_repeat_v2";
+const state = {
+  sets: [], questions: [], setIndex: 0, sentenceIndex: 0,
+  timer: null, responseTimer: null, responseSeconds: 0, responseStartedAt: 0,
+  recognition: null, recording: false, audioPlayed: false, answered: false, timedOut: false,
+  autoAdvanceTimer: null, examStarted: false, responsePending: false,
+  results: [],
+};
 
-// 要素取得
-const loadingEl = document.getElementById("loading");
-const quizScreenEl = document.getElementById("quiz-screen");
-const emptyScreenEl = document.getElementById("empty-screen");
-const endScreenEl = document.getElementById("end-screen");
-const promptBox = document.getElementById("prompt-box");
-const slotsContainer = document.getElementById("slots-container");
-const wordbankContainer = document.getElementById("wordbank-container");
-const feedbackPanel = document.getElementById("feedback-panel");
-const feedbackHeader = document.getElementById("feedback-header");
-const feedbackBody = document.getElementById("feedback-body");
-const qCounter = document.getElementById("q-counter");
-const badgeCefr = document.getElementById("badge-cefr");
-const badgeSkill = document.getElementById("badge-skill");
-const badgeChunks = document.getElementById("badge-chunks");
-const timerDisplay = document.getElementById("timer-display");
+const $ = (id) => document.getElementById(id);
+const els = {
+  loading: $("loading"), quiz: $("quiz-screen"), empty: $("empty-screen"), end: $("end-screen"),
+  counter: $("q-counter"), sentenceCounter: $("sentence-counter"), topic: $("badge-topic"),
+  questionId: $("badge-id"), questionIdInput: $("question-id-input"), jumpId: $("btn-jump-id"),
+  jumpStatus: $("jump-status"),
+  difficulty: $("badge-difficulty"), topicTitle: $("topic-title"), context: $("context-text"),
+  sceneLocation: $("scene-location"), progressLabel: $("progress-label"), progress: $("scenario-progress"),
+  progressCaption: $("progress-caption"), targetTime: $("target-time"), audio: $("audio-player"),
+  start: $("btn-start"), play: $("btn-play"), listenStatus: $("listen-status"), responseCountdown: $("response-countdown"),
+  record: $("btn-record"), recordingStatus: $("recording-status"), transcript: $("transcript"),
+  feedback: $("feedback-panel"), feedbackHeader: $("feedback-header"), feedbackBody: $("feedback-body"),
+  next: $("btn-next"), skip: $("btn-skip"), showAnswer: $("btn-show-answer"),
+  timer: $("timer-display"), finalStats: $("final-stats"), setResults: $("set-results"),
+  browserWarning: $("browser-warning"),
+};
 
-// フィルター要素
-const filterMode = document.getElementById("filter-mode");
-const filterSkill = document.getElementById("filter-skill");
-const filterCefr = document.getElementById("filter-cefr");
-const filterChunksMin = document.getElementById("filter-chunks-min");
-const filterChunksMax = document.getElementById("filter-chunks-max");
-
-const btnCheck = document.getElementById("btn-check");
-const btnNext = document.getElementById("btn-next");
-const btnReset = document.getElementById("btn-reset");
-const btnSkip = document.getElementById("btn-skip");
-const btnRestart = document.getElementById("btn-restart");
-
-// モーダル
-const modalHistory = document.getElementById("modal-history");
-const modalBackup = document.getElementById("modal-backup");
-const btnOpenHistory = document.getElementById("btn-open-history");
-const btnCloseHistory = document.getElementById("btn-close-history");
-const btnOpenBackup = document.getElementById("btn-open-backup");
-const btnCloseBackup = document.getElementById("btn-close-backup");
-const historyList = document.getElementById("history-list");
-const skillStatsList = document.getElementById("skill-stats-list");
-
-const btnExportJson = document.getElementById("btn-export-json");
-const btnImportTrigger = document.getElementById("btn-import-trigger");
-const fileImportJson = document.getElementById("file-import-json");
-const btnClearHistory = document.getElementById("btn-clear-history");
-
-// ==========================================
-// localStorage 管理
-// ==========================================
-function getStoredData() {
+function stored() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { history: [], stats: {} };
-    return JSON.parse(raw);
-  } catch (e) {
-    return { history: [], stats: {} };
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    return data && Array.isArray(data.attempts) ? data : { attempts: [] };
+  } catch {
+    return { attempts: [] };
   }
 }
 
-function saveStoredData(data) {
+function currentSet() { return state.questions[state.setIndex]; }
+function currentSentence() { return currentSet().sentences[state.sentenceIndex]; }
+function mode() { return $("filter-mode").value; }
+
+function shuffle(items) {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function normalize(text) {
+  return String(text || "").toLowerCase().replace(/[^\w\s']/g, "").replace(/\s+/g, " ").trim();
+}
+
+function wordSimilarity(target, actual) {
+  const expected = normalize(target).split(" ").filter(Boolean);
+  const heard = normalize(actual).split(" ").filter(Boolean);
+  if (!expected.length || !heard.length) return 0;
+  const matrix = Array.from({ length: expected.length + 1 }, () => new Array(heard.length + 1).fill(0));
+  for (let i = 1; i <= expected.length; i++) {
+    for (let j = 1; j <= heard.length; j++) {
+      matrix[i][j] = expected[i - 1] === heard[j - 1]
+        ? matrix[i - 1][j - 1] + 1
+        : Math.max(matrix[i - 1][j], matrix[i][j - 1]);
+    }
+  }
+  return Math.round((matrix[expected.length][heard.length] / expected.length) * 100);
+}
+
+function estimateBand(score, transcript) {
+  if (!transcript.trim() || score === 0) return 0;
+  if (score >= 98) return 5;
+  if (score >= 88) return 4;
+  if (score >= 68) return 3;
+  if (score >= 40) return 2;
+  return 1;
+}
+
+function saveAttempt(sentence, transcript, score, band, skipped = false) {
+  const data = stored();
+  data.attempts.unshift({
+    id: currentSet().id, sentenceIndex: state.sentenceIndex, topic: currentSet().topic,
+    target: sentence.sentence, transcript, similarity: score, estimatedBand: band,
+    skipped, timestamp: new Date().toISOString(),
+  });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-function recordAttempt(q, isCorrect, userOrder, userSentence, timeSpent) {
-  const store = getStoredData();
-  const record = {
-    id: q.id || `q_${Date.now()}`,
-    metadata: q.metadata || {},
-    skill: q.metadata?.skill || "general",
-    prompt: q.prompt || "",
-    targetSentence: q.targetSentence,
-    userOrder: userOrder,
-    correctOrder: q.correctOrder,
-    userSentence: userSentence,
-    isCorrect: isCorrect,
-    timeSpentSeconds: timeSpent,
-    timestamp: new Date().toISOString(),
-  };
-
-  store.history.unshift(record);
-
-  if (!store.stats[record.id]) {
-    store.stats[record.id] = {
-      attempts: 0,
-      correct: 0,
-      incorrect: 0,
-      lastIsCorrect: false,
-    };
-  }
-  const s = store.stats[record.id];
-  s.attempts++;
-  if (isCorrect) s.correct++;
-  else s.incorrect++;
-  s.lastIsCorrect = isCorrect;
-  s.lastTimestamp = record.timestamp;
-
-  saveStoredData(store);
-}
-
-// ==========================================
-// 初期化 & フィルター構築
-// ==========================================
 async function init() {
   try {
-    const res = await fetch("./generator/parsed.jsonl");
-    if (!res.ok)
-      throw new Error(
-        `HTTP ${res.status}: Cannot read ./generator/parsed.jsonl`,
-      );
-
-    const text = await res.text();
-    allQuestions = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line));
-
-    if (allQuestions.length === 0) throw new Error("File is empty.");
-
-    buildFilterOptions();
-    loadingEl.classList.add("hidden");
-    setupWordBankDropZone();
-
-    applyFilter();
-  } catch (err) {
-    loadingEl.innerHTML = `
-      <div style="color: #dc2626; padding: 1.5rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;">
-        <strong>Error loading data:</strong><br>${err.message}
-      </div>
-    `;
+    const response = await fetch("./output.jsonl");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state.sets = (await response.text()).split(/\r?\n/).filter(Boolean).map(JSON.parse)
+      .filter((set) => Array.isArray(set.sentences) && set.sentences.length === 7);
+    if (!state.sets.length) throw new Error("7文セットが見つかりません。");
+    applyFilters();
+    els.loading.classList.add("hidden");
+  } catch (error) {
+    els.loading.innerHTML = `<div class="error-box"><strong>問題を読み込めませんでした。</strong><br>ローカルサーバー経由で開き、output.jsonl を確認してください。<br><small>${error.message}</small></div>`;
   }
 }
 
-/**
- * Skill, CEFR, Chunks Range の選択肢を動的生成
- */
-function buildFilterOptions() {
-  const skillSet = new Set();
-  const cefrSet = new Set();
-  const chunksSet = new Set();
-
-  allQuestions.forEach((q) => {
-    if (q.metadata?.skill) skillSet.add(q.metadata.skill);
-    if (q.metadata?.cefr) cefrSet.add(q.metadata.cefr);
-    const count = q.correctOrder?.length || q.options?.length || 0;
-    if (count > 0) chunksSet.add(count);
-  });
-
-  // 1. Skill ドロップダウン
-  Array.from(skillSet)
-    .sort()
-    .forEach((sk) => {
-      const opt = document.createElement("option");
-      opt.value = sk;
-      opt.textContent = sk;
-      filterSkill.appendChild(opt);
-    });
-
-  // 2. CEFR ドロップダウン
-  const cefrOrder = ["A1", "A2", "B1", "B2", "C1", "C2"];
-  const sortedCefr = Array.from(cefrSet).sort((a, b) => {
-    const ia = cefrOrder.indexOf(a.toUpperCase());
-    const ib = cefrOrder.indexOf(b.toUpperCase());
-    return ia !== -1 && ib !== -1 ? ia - ib : a.localeCompare(b);
-  });
-  sortedCefr.forEach((lvl) => {
-    const opt = document.createElement("option");
-    opt.value = lvl;
-    opt.textContent = `CEFR: ${lvl}`;
-    filterCefr.appendChild(opt);
-  });
-
-  // 3. Chunks Range (Min 〜 Max)
-  const sortedChunks = Array.from(chunksSet).sort((a, b) => a - b);
-  const minVal = sortedChunks[0] || 1;
-  const maxVal = sortedChunks[sortedChunks.length - 1] || 10;
-
-  sortedChunks.forEach((cnt) => {
-    const optMin = document.createElement("option");
-    optMin.value = cnt;
-    optMin.textContent = cnt;
-    if (cnt === minVal) optMin.selected = true;
-    filterChunksMin.appendChild(optMin);
-
-    const optMax = document.createElement("option");
-    optMax.value = cnt;
-    optMax.textContent = cnt;
-    if (cnt === maxVal) optMax.selected = true;
-    filterChunksMax.appendChild(optMax);
-  });
-
-  filterMode.addEventListener("change", applyFilter);
-  filterSkill.addEventListener("change", applyFilter);
-  filterCefr.addEventListener("change", applyFilter);
-  filterChunksMin.addEventListener("change", onChunksRangeChange);
-  filterChunksMax.addEventListener("change", onChunksRangeChange);
-}
-
-function onChunksRangeChange() {
-  let min = parseInt(filterChunksMin.value, 10);
-  let max = parseInt(filterChunksMax.value, 10);
-  if (min > max) {
-    filterChunksMax.value = min;
-  }
-  applyFilter();
-}
-
-// ==========================================
-// フィルター & モード適用
-// ==========================================
-function applyFilter() {
-  const selectedMode = filterMode.value;
-  const selectedSkill = filterSkill.value;
-  const selectedCefr = filterCefr.value;
-  const minChunks = parseInt(filterChunksMin.value, 10) || 0;
-  const maxChunks = parseInt(filterChunksMax.value, 10) || 999;
-  const store = getStoredData();
-
-  let filtered = allQuestions.filter((q) => {
-    const skill = q.metadata?.skill || "";
-    const cefr = q.metadata?.cefr || "";
-    const chunks = q.correctOrder?.length || q.options?.length || 0;
-
-    const matchSkill = selectedSkill === "all" || skill === selectedSkill;
-    const matchCefr =
-      selectedCefr === "all" ||
-      cefr.toLowerCase() === selectedCefr.toLowerCase();
-    const matchChunks = chunks >= minChunks && chunks <= maxChunks;
-
-    return matchSkill && matchCefr && matchChunks;
-  });
-
+function applyFilters() {
+  stopAllTimers();
+  const difficulty = $("filter-difficulty").value;
+  const selectedMode = mode();
+  const data = stored();
+  let filtered = state.sets.filter((set) => difficulty === "all" || set.sentences.some((s) => s.difficulty === difficulty));
+  const attempts = new Set(data.attempts.map((a) => `${a.id}-${a.sentenceIndex}`));
   if (selectedMode === "review") {
-    filtered = filtered.filter((q) => {
-      const s = store.stats[q.id];
-      return s && s.incorrect > 0;
-    });
-    filtered.sort(() => Math.random() - 0.5);
+    const mistakes = new Set(data.attempts.filter((a) => a.estimatedBand < 4 || a.similarity < 88).map((a) => `${a.id}-${a.sentenceIndex}`));
+    filtered = filtered.filter((set) => set.sentences.some((_, index) => mistakes.has(`${set.id}-${index}`)));
   } else if (selectedMode === "unsolved") {
-    const unsolved = [];
-    const solved = [];
-    filtered.forEach((q) => {
-      if (store.stats[q.id] && store.stats[q.id].attempts > 0) {
-        solved.push(q);
-      } else {
-        unsolved.push(q);
-      }
-    });
-    unsolved.sort(() => Math.random() - 0.5);
-    solved.sort(() => Math.random() - 0.5);
-    filtered = [...unsolved, ...solved];
+    const unsolved = filtered.filter((set) => !attempts.has(`${set.id}-0`));
+    const solved = filtered.filter((set) => attempts.has(`${set.id}-0`));
+    filtered = [...shuffle(unsolved), ...shuffle(solved)];
   } else {
-    filtered.sort(() => Math.random() - 0.5);
+    filtered = shuffle(filtered);
   }
-
-  questions = filtered;
-  currentIndex = 0;
-  score = { correct: 0, total: 0 };
-
-  if (questions.length === 0) {
-    quizScreenEl.classList.add("hidden");
-    endScreenEl.classList.add("hidden");
-    emptyScreenEl.classList.remove("hidden");
-
-    if (selectedMode === "review") {
-      document.getElementById("empty-title").textContent =
-        "No Mistakes to Review!";
-      document.getElementById("empty-desc").textContent =
-        "この条件で間違えた問題のストックはありません。素晴らしい！";
-    } else {
-      document.getElementById("empty-title").textContent = "No Questions Found";
-      document.getElementById("empty-desc").textContent =
-        "条件に一致する問題がありません。フィルター設定を変更してください。";
-    }
-    stopTimer();
-    timerDisplay.textContent = "00:00";
+  if (selectedMode === "exam") filtered = filtered.slice(0, 1);
+  state.questions = filtered;
+  state.setIndex = 0;
+  state.sentenceIndex = 0;
+  state.results = [];
+  if (!filtered.length) {
+    els.quiz.classList.add("hidden"); els.end.classList.add("hidden"); els.empty.classList.remove("hidden");
   } else {
-    emptyScreenEl.classList.add("hidden");
-    quizScreenEl.classList.remove("hidden");
-    renderQuestion();
+    els.empty.classList.add("hidden"); els.end.classList.add("hidden"); els.quiz.classList.remove("hidden"); render();
   }
 }
 
-// ==========================================
-// 問題レンダリング
-// ==========================================
-function renderQuestion() {
-  if (currentIndex >= questions.length) {
-    showEndScreen();
-    return;
+function render() {
+  const set = currentSet();
+  const sentence = currentSentence();
+  const maxSeconds = Math.max(8, Math.min(12, Number(sentence.target_seconds) || 10));
+  const location = ["場面の入口", "案内カウンター", "主要な設備", "利用エリア", "掲示・案内", "サービス窓口", "場面の出口"][state.sentenceIndex];
+  els.counter.textContent = `Set ${state.setIndex + 1} / ${state.questions.length}`;
+  els.sentenceCounter.textContent = `Sentence ${state.sentenceIndex + 1} / 7`;
+  els.topic.textContent = `Topic: ${set.topic || "-"}`;
+  els.questionId.textContent = `ID: ${set.id}`;
+  els.difficulty.textContent = `Difficulty: ${sentence.difficulty || "medium"}`;
+  els.topicTitle.textContent = set.topic || "Campus situation";
+  els.context.textContent = sentence.japanese_context || "キャンパス内の場面を説明する英文です。";
+  els.sceneLocation.textContent = `現在地: ${location}`;
+  els.progressLabel.textContent = `${state.sentenceIndex + 1} / 7`;
+  els.progress.innerHTML = "";
+  for (let i = 0; i < 7; i++) {
+    const step = document.createElement("span");
+    step.className = `progress-step ${i < state.sentenceIndex ? "done" : ""} ${i === state.sentenceIndex ? "current" : ""}`;
+    step.textContent = i + 1;
+    step.setAttribute("aria-label", `Sentence ${i + 1}`);
+    els.progress.appendChild(step);
   }
 
-  const q = questions[currentIndex];
-  const totalSlotsNeeded = q.correctOrder?.length || q.options.length;
-
-  slots = new Array(totalSlotsNeeded).fill(null);
+  els.progressCaption.textContent = state.sentenceIndex === 0
+    ? "この場面の最初の文です。"
+    : state.sentenceIndex === 6 ? "最後の文です。聞こえた通りに再現しましょう。" : "場面の次の場所へ進みます。";
+  els.targetTime.textContent = `最大 ${maxSeconds} 秒`;
+  els.audio.src = `./audio/${encodeURIComponent(set.id)}/${encodeURIComponent(set.id)}-${state.sentenceIndex + 1}.wav`;
+  els.audio.load();
+  state.audioPlayed = false; state.answered = false; state.timedOut = false;
+  state.responsePending = false; state.responseSeconds = maxSeconds;
+  state.examStarted = false;
+  clearTimeout(state.autoAdvanceTimer);
+  els.responseCountdown.textContent = `${maxSeconds}s`;
+  els.transcript.textContent = "音声を聞いてから録音してください。";
+  els.listenStatus.textContent = mode() === "practice" ? "音声を再生してください。" : "「問題をスタート」を押すと自動で進行します。";
+  els.feedback.className = "feedback-panel hidden";
+  els.next.classList.add("hidden"); els.showAnswer.classList.add("hidden");
+  els.record.disabled = true; els.skip.disabled = false;
+  els.start.classList.toggle("hidden", mode() !== "exam");
+  els.play.classList.toggle("hidden", mode() === "exam");
+  els.play.disabled = false; els.play.innerHTML = '<i class="fa-solid fa-volume-high"></i><span>音声を再生</span>';
+  els.recordingStatus.innerHTML = '<i class="fa-solid fa-microphone"></i> 待機中';
   startTimer();
-
-  qCounter.textContent = `Question ${currentIndex + 1} of ${questions.length}`;
-  badgeCefr.textContent = `CEFR: ${q.metadata?.cefr || "N/A"}`;
-  badgeSkill.textContent = `Skill: ${q.metadata?.skill || "General"}`;
-  badgeChunks.textContent = `${totalSlotsNeeded} Chunks`;
-  promptBox.textContent = q.prompt || "(No prompt context)";
-
-  feedbackPanel.classList.add("hidden");
-  feedbackPanel.className = "feedback-panel hidden";
-
-  btnCheck.classList.remove("hidden");
-  btnCheck.disabled = true;
-  btnNext.classList.add("hidden");
-  btnSkip.classList.remove("hidden");
-  btnReset.disabled = false;
-
-  updateViews();
 }
 
-function formatWordText(text, isFirst) {
-  let cleaned = text.trim().replace(/\.$/, "");
-  if (isFirst && cleaned.length > 0) {
-    cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-  }
-  return cleaned;
-}
-
-function updateViews() {
-  const q = questions[currentIndex];
-  slotsContainer.innerHTML = "";
-
-  slots.forEach((optIdx, slotIdx) => {
-    if (optIdx !== null) {
-      const isFirst = slotIdx === 0;
-      const displayText = formatWordText(q.options[optIdx], isFirst);
-      const chip = createPlacedChip(displayText, optIdx, slotIdx);
-      slotsContainer.appendChild(chip);
-    } else {
-      const emptySlot = createSlotDropTarget(slotIdx);
-      slotsContainer.appendChild(emptySlot);
-    }
-  });
-
-  wordbankContainer.innerHTML = "";
-  q.options.forEach((opt, idx) => {
-    if (!slots.includes(idx)) {
-      const displayText = formatWordText(opt, false);
-      const bankChip = createBankChip(displayText, idx);
-      wordbankContainer.appendChild(bankChip);
-    }
-  });
-
-  const isAllFilled = slots.every((val) => val !== null);
-  btnCheck.disabled = !isAllFilled;
-}
-
-function createSlotDropTarget(slotIdx) {
-  const slot = document.createElement("div");
-  slot.className = "slot-placeholder";
-  slot.textContent = `[ ${slotIdx + 1} ]`;
-
-  slot.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    slot.classList.add("drag-target");
-  });
-
-  slot.addEventListener("dragleave", () => {
-    slot.classList.remove("drag-target");
-  });
-
-  slot.addEventListener("drop", (e) => {
-    e.preventDefault();
-    slot.classList.remove("drag-target");
-
-    const dataStr = e.dataTransfer.getData("text/plain");
-    if (!dataStr) return;
-    const data = JSON.parse(dataStr);
-
-    if (data.source === "bank") {
-      slots[slotIdx] = data.optIdx;
-    } else if (data.source === "slot") {
-      slots[slotIdx] = slots[data.fromSlot];
-      slots[data.fromSlot] = null;
-    }
-
-    updateViews();
-  });
-
-  return slot;
-}
-
-function createPlacedChip(text, optIdx, slotIdx) {
-  const btn = document.createElement("button");
-  btn.className = "word-chip placed";
-  btn.textContent = text;
-  btn.draggable = true;
-
-  btn.onclick = () => {
-    slots[slotIdx] = null;
-    updateViews();
-  };
-
-  btn.addEventListener("dragstart", (e) => {
-    btn.classList.add("dragging");
-    e.dataTransfer.setData(
-      "text/plain",
-      JSON.stringify({
-        source: "slot",
-        fromSlot: slotIdx,
-        optIdx: optIdx,
-      }),
-    );
-  });
-
-  btn.addEventListener("dragend", () => {
-    btn.classList.remove("dragging");
-  });
-
-  btn.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    btn.classList.add("drag-target");
-  });
-
-  btn.addEventListener("dragleave", (e) => {
-    e.stopPropagation();
-    btn.classList.remove("drag-target");
-  });
-
-  btn.addEventListener("drop", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    btn.classList.remove("drag-target");
-
-    const dataStr = e.dataTransfer.getData("text/plain");
-    if (!dataStr) return;
-    const data = JSON.parse(dataStr);
-
-    if (data.source === "slot") {
-      const temp = slots[slotIdx];
-      slots[slotIdx] = slots[data.fromSlot];
-      slots[data.fromSlot] = temp;
-    } else if (data.source === "bank") {
-      slots[slotIdx] = data.optIdx;
-    }
-
-    updateViews();
-  });
-
-  return btn;
-}
-
-function createBankChip(text, optIdx) {
-  const btn = document.createElement("button");
-  btn.className = "word-chip";
-  btn.textContent = text;
-  btn.draggable = true;
-
-  btn.onclick = () => {
-    const emptyIndex = slots.indexOf(null);
-    if (emptyIndex !== -1) {
-      slots[emptyIndex] = optIdx;
-      updateViews();
-    }
-  };
-
-  btn.addEventListener("dragstart", (e) => {
-    btn.classList.add("dragging");
-    e.dataTransfer.setData(
-      "text/plain",
-      JSON.stringify({
-        source: "bank",
-        optIdx: optIdx,
-      }),
-    );
-  });
-
-  btn.addEventListener("dragend", () => {
-    btn.classList.remove("dragging");
-  });
-
-  return btn;
-}
-
-function setupWordBankDropZone() {
-  wordbankContainer.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    wordbankContainer.classList.add("drag-over");
-  });
-
-  wordbankContainer.addEventListener("dragleave", () => {
-    wordbankContainer.classList.remove("drag-over");
-  });
-
-  wordbankContainer.addEventListener("drop", (e) => {
-    e.preventDefault();
-    wordbankContainer.classList.remove("drag-over");
-
-    const dataStr = e.dataTransfer.getData("text/plain");
-    if (!dataStr) return;
-    const data = JSON.parse(dataStr);
-
-    if (data.source === "slot") {
-      slots[data.fromSlot] = null;
-      updateViews();
-    }
-  });
-}
-
-// ==========================================
-// 判定 & ログ保存
-// ==========================================
-function submitAnswer() {
-  stopTimer();
-  const q = questions[currentIndex];
-  const isCorrect = JSON.stringify(slots) === JSON.stringify(q.correctOrder);
-
-  const userWords = slots.map((optIdx, i) =>
-    formatWordText(q.options[optIdx], i === 0),
-  );
-  const userSentence = userWords.join(" ") + ".";
-
-  recordAttempt(q, isCorrect, [...slots], userSentence, timerSeconds);
-
-  score.total++;
-  if (isCorrect) score.correct++;
-
-  feedbackPanel.classList.remove("hidden");
-
-  if (isCorrect) {
-    feedbackPanel.className = "feedback-panel correct";
-    feedbackHeader.innerHTML =
-      '<i class="fa-solid fa-circle-check"></i> Correct!';
-    feedbackBody.innerHTML = `<strong>Target Sentence:</strong> ${q.targetSentence}`;
-  } else {
-    feedbackPanel.className = "feedback-panel incorrect";
-    feedbackHeader.innerHTML =
-      '<i class="fa-solid fa-circle-xmark"></i> Incorrect';
-    feedbackBody.innerHTML = `
-      <div><strong>Your Sentence:</strong> <span style="color:#dc2626">${userSentence}</span></div>
-      <div style="margin-top: 0.25rem;"><strong>Target Sentence:</strong> <span style="color:#059669">${q.targetSentence}</span></div>
-    `;
-  }
-
-  btnCheck.classList.add("hidden");
-  btnNext.classList.remove("hidden");
-  btnSkip.classList.add("hidden");
-  btnReset.disabled = true;
-}
-
-// ==========================================
-// ★Skill別弱点分析 ＆ 履歴モーダルの描画
-// ==========================================
-function renderHistoryModal() {
-  const store = getStoredData();
-  const hist = store.history || [];
-
-  const total = hist.length;
-  const corrects = hist.filter((h) => h.isCorrect).length;
-  const acc = total > 0 ? Math.round((corrects / total) * 100) : 0;
-
-  const mistakeIds = new Set();
-  Object.keys(store.stats || {}).forEach((id) => {
-    if (store.stats[id].incorrect > 0) mistakeIds.add(id);
-  });
-
-  document.getElementById("stat-total-attempts").textContent = total;
-  document.getElementById("stat-accuracy").textContent =
-    `${acc}% (${corrects}/${total})`;
-  document.getElementById("stat-mistakes").textContent = mistakeIds.size;
-
-  // 1. Skill別集計
-  const skillMap = {};
-  hist.forEach((h) => {
-    const sk = h.skill || h.metadata?.skill || "general";
-    if (!skillMap[sk]) {
-      skillMap[sk] = { total: 0, correct: 0, incorrect: 0 };
-    }
-    skillMap[sk].total++;
-    if (h.isCorrect) skillMap[sk].correct++;
-    else skillMap[sk].incorrect++;
-  });
-
-  // 正答率の低い順（弱点順）にソート
-  const skillArray = Object.keys(skillMap)
-    .map((sk) => {
-      const item = skillMap[sk];
-      const skillAcc = Math.round((item.correct / item.total) * 100);
-      return { name: sk, ...item, accuracy: skillAcc };
-    })
-    .sort((a, b) => {
-      // 正答率が低い順、同じならミスが多い順
-      if (a.accuracy !== b.accuracy) return a.accuracy - b.accuracy;
-      return b.incorrect - a.incorrect;
-    });
-
-  skillStatsList.innerHTML = "";
-  if (skillArray.length === 0) {
-    skillStatsList.innerHTML =
-      '<p class="text-xs text-muted" style="grid-column: 1/-1;">まだSkill統計データがありません。</p>';
-  } else {
-    skillArray.forEach((sk) => {
-      const card = document.createElement("div");
-      const isWeak = sk.accuracy < 70;
-      card.className = `skill-card ${isWeak ? "weak" : ""}`;
-
-      let accClass = "high";
-      let barColor = "#059669";
-      if (sk.accuracy < 60) {
-        accClass = "low";
-        barColor = "#dc2626";
-      } else if (sk.accuracy < 80) {
-        accClass = "medium";
-        barColor = "#d97706";
-      }
-
-      card.innerHTML = `
-        <div class="skill-card-top">
-          <span class="skill-name" title="${sk.name}">${sk.name}</span>
-          <span class="skill-accuracy ${accClass}">${sk.accuracy}%</span>
-        </div>
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill" style="width: ${sk.accuracy}%; background: ${barColor};"></div>
-        </div>
-        <div class="skill-card-bottom">
-          <span>${sk.correct}/${sk.total} (${sk.incorrect} misses)</span>
-          <button class="btn-practice-skill" data-skill="${sk.name}">
-            <i class="fa-solid fa-play"></i> Drill
-          </button>
-        </div>
-      `;
-      skillStatsList.appendChild(card);
-    });
-
-    // 「Drill」ボタンで該当Skillに絞り込み開始
-    skillStatsList.querySelectorAll(".btn-practice-skill").forEach((btn) => {
-      btn.onclick = () => {
-        const targetSkill = btn.getAttribute("data-skill");
-        modalHistory.classList.add("hidden");
-        filterSkill.value = targetSkill;
-        applyFilter();
-      };
-    });
-  }
-
-  // 2. 解答履歴リスト
-  historyList.innerHTML = "";
-  if (hist.length === 0) {
-    historyList.innerHTML =
-      '<p class="text-muted text-center" style="padding:1.5rem;">解答履歴がありません。</p>';
+function jumpToQuestionId() {
+  const requestedId = els.questionIdInput.value.trim();
+  const target = state.sets.find((set) => String(set.id) === requestedId);
+  if (!requestedId || !target) {
+    els.jumpStatus.textContent = "該当するIDがありません";
+    els.jumpStatus.className = "jump-status error";
     return;
   }
+  stopAllTimers();
+  state.questions = [target];
+  state.setIndex = 0;
+  state.sentenceIndex = 0;
+  state.results = [];
+  els.questionIdInput.value = String(target.id);
+  els.jumpStatus.textContent = `ID ${target.id} を表示中`;
+  els.jumpStatus.className = "jump-status success";
+  els.empty.classList.add("hidden");
+  els.end.classList.add("hidden");
+  els.quiz.classList.remove("hidden");
+  render();
+}
 
-  hist.slice(0, 50).forEach((h) => {
-    const item = document.createElement("div");
-    item.className = `history-item ${h.isCorrect ? "correct" : "incorrect"}`;
-
-    const dateStr = new Date(h.timestamp).toLocaleString();
-    item.innerHTML = `
-      <div class="history-meta">
-        <span>${h.isCorrect ? '<strong style="color:#059669">✓ CORRECT</strong>' : '<strong style="color:#dc2626">✗ INCORRECT</strong>'} (${h.timeSpentSeconds}s)</span>
-        <span>${dateStr} | Skill: <strong>${h.skill}</strong> | CEFR: ${h.metadata?.cefr || "N/A"}</span>
-      </div>
-      <div class="history-prompt">Prompt: ${h.prompt || "-"}</div>
-      ${
-        !h.isCorrect
-          ? `
-        <div class="diff-line">
-          <span class="diff-label">Your Answer:</span>
-          <span class="diff-user wrong">${h.userSentence}</span>
-        </div>
-      `
-          : ""
-      }
-      <div class="diff-line">
-        <span class="diff-label">Target:</span>
-        <span class="diff-target">${h.targetSentence}</span>
-      </div>
-    `;
-    historyList.appendChild(item);
+function playAudio() {
+  if (state.audioPlayed || !els.audio.paused) return;
+  state.audioPlayed = true;
+  els.play.disabled = mode() === "exam";
+  els.play.innerHTML = '<i class="fa-solid fa-volume-high"></i><span>再生中...</span>';
+  els.listenStatus.textContent = "再生中...";
+  els.audio.pause();
+  els.audio.currentTime = 0;
+  const playback = els.audio.play();
+  playback.catch(() => {
+    state.audioPlayed = false;
+    els.listenStatus.textContent = "音声を再生できません。audioフォルダーの配置を確認してください。";
+    armResponse();
   });
 }
 
-// ==========================================
-// チェックポイント
-// ==========================================
-function exportCheckpoint() {
-  const store = getStoredData();
-  const dataStr =
-    "data:text/json;charset=utf-8," +
-    encodeURIComponent(JSON.stringify(store, null, 2));
-  const now = new Date().toISOString().slice(0, 10);
-  const dlAnchor = document.createElement("a");
-  dlAnchor.setAttribute("href", dataStr);
-  dlAnchor.setAttribute("download", `toefl_sentence_checkpoint_${now}.json`);
-  document.body.appendChild(dlAnchor);
-  dlAnchor.click();
-  dlAnchor.remove();
+function startExam() {
+  if (state.examStarted || state.answered) return;
+  state.examStarted = true;
+  els.start.classList.add("hidden");
+  playAudio();
 }
 
-function importCheckpoint(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const imported = JSON.parse(e.target.result);
-      if (!imported.history || !imported.stats) {
-        throw new Error("無効なバックアップファイル形式です");
-      }
-      saveStoredData(imported);
-      alert("チェックポイントを正常に復元しました！");
-      modalBackup.classList.add("hidden");
-      applyFilter();
-    } catch (err) {
-      alert("ファイルのインポートに失敗しました: " + err.message);
+function armResponse() {
+  if (state.answered || state.responsePending) return;
+  state.responsePending = true;
+  els.listenStatus.textContent = "再生終了。録音ボタンを押して繰り返してください。";
+  els.record.disabled = false;
+  els.play.innerHTML = mode() === "practice"
+    ? '<i class="fa-solid fa-rotate-right"></i><span>もう一度聞く</span>'
+    : '<i class="fa-solid fa-check"></i><span>再生済み</span>';
+  if (mode() === "exam" && !state.answered) {
+    els.record.disabled = true;
+    els.listenStatus.textContent = "1秒後にビープ音が鳴り、録音が始まります。";
+    state.autoAdvanceTimer = setTimeout(() => {
+      state.responsePending = false;
+      playBeep();
+      beginResponseCountdown();
+      startRecording();
+    }, 1000);
+  } else {
+    state.responsePending = false;
+    beginResponseCountdown();
+  }
+}
+
+function playBeep() {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const context = new AudioContext();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.value = 880;
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.16, context.currentTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.16);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.18);
+  oscillator.addEventListener("ended", () => context.close());
+}
+
+function beginResponseCountdown() {
+  clearInterval(state.responseTimer);
+  const maxSeconds = Math.max(8, Math.min(12, Number(currentSentence().target_seconds) || 10));
+  state.responseSeconds = maxSeconds;
+  state.responseStartedAt = Date.now();
+  els.responseCountdown.textContent = `${maxSeconds}s`;
+  state.responseTimer = setInterval(() => {
+    const remaining = maxSeconds - Math.floor((Date.now() - state.responseStartedAt) / 1000);
+    state.responseSeconds = Math.max(0, remaining);
+    els.responseCountdown.textContent = `${state.responseSeconds}s`;
+    if (remaining <= 0) {
+      clearInterval(state.responseTimer);
+      state.responseTimer = null;
+      state.timedOut = true;
+      if (state.recording && state.recognition) state.recognition.stop();
+      else if (!state.answered) showFeedback("", true, "時間切れ");
     }
-  };
-  reader.readAsText(file);
+  }, 250);
 }
 
 function startTimer() {
-  stopTimer();
-  timerSeconds = 0;
-  renderTimerDisplay();
-  timerInterval = setInterval(() => {
-    timerSeconds++;
-    renderTimerDisplay();
-  }, 1000);
+  clearInterval(state.timer);
+  const started = Date.now();
+  state.timer = setInterval(() => {
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    els.timer.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  }, 500);
 }
 
-function stopTimer() {
-  if (timerInterval) clearInterval(timerInterval);
+function stopAllTimers() {
+  clearInterval(state.timer); clearInterval(state.responseTimer);
+  clearTimeout(state.autoAdvanceTimer);
+  state.timer = null; state.responseTimer = null;
+  if (state.recording && state.recognition) state.recognition.stop();
 }
 
-function renderTimerDisplay() {
-  const m = String(Math.floor(timerSeconds / 60)).padStart(2, "0");
-  const s = String(timerSeconds % 60).padStart(2, "0");
-  timerDisplay.textContent = `${m}:${s}`;
+function safe(text) {
+  const div = document.createElement("div");
+  div.textContent = String(text || "");
+  return div.innerHTML;
 }
 
-function showEndScreen() {
-  stopTimer();
-  quizScreenEl.classList.add("hidden");
-  endScreenEl.classList.remove("hidden");
-
-  const pct =
-    score.total > 0 ? Math.round((score.correct / score.total) * 100) : 0;
-  document.getElementById("final-stats").innerHTML = `
-    Session completed!<br>
-    Session Score: <strong>${score.correct} / ${score.total}</strong> (${pct}%)
-  `;
-}
-
-// イベント
-btnCheck.addEventListener("click", submitAnswer);
-btnNext.addEventListener("click", () => {
-  currentIndex++;
-  renderQuestion();
-});
-btnSkip.addEventListener("click", () => {
-  currentIndex++;
-  renderQuestion();
-});
-btnReset.addEventListener("click", () => {
-  slots.fill(null);
-  updateViews();
-});
-btnRestart.addEventListener("click", () => {
-  applyFilter();
-});
-
-btnOpenHistory.addEventListener("click", () => {
-  renderHistoryModal();
-  modalHistory.classList.remove("hidden");
-});
-btnCloseHistory.addEventListener("click", () => {
-  modalHistory.classList.add("hidden");
-});
-
-btnOpenBackup.addEventListener("click", () => {
-  modalBackup.classList.remove("hidden");
-});
-btnCloseBackup.addEventListener("click", () => {
-  modalBackup.classList.add("hidden");
-});
-
-btnExportJson.addEventListener("click", exportCheckpoint);
-btnImportTrigger.addEventListener("click", () => {
-  fileImportJson.click();
-});
-fileImportJson.addEventListener("change", (e) => {
-  if (e.target.files.length > 0) importCheckpoint(e.target.files[0]);
-});
-btnClearHistory.addEventListener("click", () => {
-  if (confirm("本当にすべての解答履歴と統計をリセットしますか？")) {
-    localStorage.removeItem(STORAGE_KEY);
-    alert("履歴を消去しました");
-    modalBackup.classList.add("hidden");
-    applyFilter();
+function showFeedback(text, skipped = false, label = "") {
+  if (state.answered) return;
+  state.answered = true; state.responsePending = false;
+  clearInterval(state.responseTimer); state.responseTimer = null;
+  const sentence = currentSentence();
+  const score = wordSimilarity(sentence.sentence, text);
+  const band = skipped ? 0 : estimateBand(score, text);
+  saveAttempt(sentence, text, skipped ? 0 : score, band, skipped);
+  state.results.push({ index: state.sentenceIndex + 1, band, score });
+  els.transcript.textContent = text || "（認識できませんでした）";
+  els.feedback.classList.remove("hidden");
+  els.feedback.className = `feedback-panel ${band >= 4 ? "correct" : band >= 3 ? "review" : "incorrect"}`;
+  els.feedbackHeader.textContent = skipped ? `${label || "スキップ"}（推定 0 / 5）` : `推定 ${band} / 5　（一致度 ${score}%）`;
+  els.feedbackBody.innerHTML = `<div><strong>あなたの発話:</strong> ${safe(text || "認識できませんでした")}</div><div class="target-line"><strong>正解英文:</strong> ${safe(sentence.sentence)}</div><small>これは練習用の自動推定です。公式スコアではありません。</small>`;
+  els.next.classList.remove("hidden"); els.showAnswer.classList.add("hidden");
+  els.record.disabled = true; els.skip.disabled = true;
+  els.responseCountdown.textContent = "完了";
+  if (mode() === "exam") {
+    els.next.classList.add("hidden");
+    els.listenStatus.textContent = "次の文へ自動で進みます...";
+    state.autoAdvanceTimer = setTimeout(nextSentence, 1200);
   }
-});
+}
 
-window.addEventListener("click", (e) => {
-  if (e.target === modalHistory) modalHistory.classList.add("hidden");
-  if (e.target === modalBackup) modalBackup.classList.add("hidden");
-});
-
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    if (!btnNext.classList.contains("hidden")) {
-      btnNext.click();
-    } else if (!btnCheck.disabled && !btnCheck.classList.contains("hidden")) {
-      btnCheck.click();
-    }
+function startRecording() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    showFeedback("", true, "音声認識非対応");
+    els.feedbackBody.innerHTML = "<div>Chrome / Edgeなど音声認識に対応したブラウザでお試しください。</div>";
+    return;
   }
-});
+  state.recognition = new Recognition();
+  state.recognition.lang = "en-US";
+  state.recognition.interimResults = false;
+  state.recognition.maxAlternatives = 1;
+  state.recognition.onstart = () => {
+    state.recording = true; els.record.classList.add("recording");
+    els.record.innerHTML = '<i class="fa-solid fa-stop"></i><span>録音停止</span>';
+    els.recordingStatus.innerHTML = '<i class="fa-solid fa-circle"></i> 録音中...';
+  };
+  state.recognition.onresult = (event) => showFeedback(event.results[0][0].transcript);
+  state.recognition.onerror = (event) => {
+    if (event.error === "no-speech") showFeedback("", true, "音声を認識できませんでした");
+    else els.recordingStatus.textContent = `認識エラー: ${event.error}`;
+  };
+  state.recognition.onend = () => {
+    if (state.timedOut && !state.answered) showFeedback("", true, "時間切れ");
+    resetRecordButton();
+  };
+  state.recognition.start();
+}
 
+function resetRecordButton() {
+  state.recording = false; els.record.classList.remove("recording");
+  els.record.innerHTML = '<i class="fa-solid fa-microphone"></i><span>録音開始</span>';
+  if (!state.answered) els.recordingStatus.innerHTML = '<i class="fa-solid fa-microphone"></i> 待機中';
+}
+
+function showAnswer() {
+  els.transcript.textContent = currentSentence().sentence;
+  els.feedback.className = "feedback-panel review"; els.feedback.classList.remove("hidden");
+  els.feedbackHeader.textContent = "英文を確認中";
+  els.feedbackBody.textContent = "音声をもう一度聞いて、語順・機能語・語尾を確認してください。英文表示は採点には含まれません。";
+}
+
+function nextSentence() {
+  if (state.sentenceIndex < 6) state.sentenceIndex++;
+  else if (state.setIndex < state.questions.length - 1) { state.setIndex++; state.sentenceIndex = 0; }
+  else { showEnd(); return; }
+  render();
+  if (mode() === "exam") {
+    state.autoAdvanceTimer = setTimeout(startExam, 500);
+  }
+}
+
+function showEnd() {
+  stopAllTimers(); els.quiz.classList.add("hidden"); els.end.classList.remove("hidden");
+  const results = state.results;
+  const total = results.length;
+  const average = total ? (results.reduce((sum, item) => sum + item.band, 0) / total).toFixed(1) : "0.0";
+  els.finalStats.textContent = `${total}文完了 / 推定平均 ${average} / 5（公式スコアではありません）`;
+  els.setResults.innerHTML = results.map((item) => `<span class="result-pill band-${item.band}">文${item.index}: ${item.band}/5</span>`).join("");
+}
+
+function renderHistory() {
+  const attempts = stored().attempts;
+  const correct = attempts.filter((a) => a.estimatedBand >= 4).length;
+  $("stat-total-attempts").textContent = attempts.length;
+  $("stat-accuracy").textContent = `${attempts.length ? Math.round(correct / attempts.length * 100) : 0}%`;
+  $("stat-mistakes").textContent = attempts.filter((a) => a.estimatedBand < 4).length;
+  $("history-list").innerHTML = attempts.length ? attempts.slice(0, 30).map((a) =>
+    `<div class="history-item ${a.estimatedBand >= 4 ? "correct" : "incorrect"}"><strong>${a.estimatedBand}/5</strong>　<span class="history-id">ID: ${safe(a.id)}</span>　${safe(a.target)}<br><small>${safe(a.transcript || "スキップ")}　${new Date(a.timestamp).toLocaleString()}</small></div>`).join("")
+    : '<p class="text-muted">まだ履歴がありません。</p>';
+}
+
+els.start.addEventListener("click", startExam);
+els.play.addEventListener("click", playAudio);
+els.audio.addEventListener("ended", armResponse);
+els.record.addEventListener("click", () => state.recording ? state.recognition.stop() : startRecording());
+els.next.addEventListener("click", nextSentence);
+els.skip.addEventListener("click", () => showFeedback("", true, "スキップ"));
+els.showAnswer.addEventListener("click", showAnswer);
+$("filter-mode").addEventListener("change", applyFilters);
+$("filter-difficulty").addEventListener("change", applyFilters);
+$("btn-jump-id").addEventListener("click", jumpToQuestionId);
+$("question-id-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") jumpToQuestionId();
+});
+$("btn-restart").addEventListener("click", applyFilters);
+$("btn-open-history").addEventListener("click", () => { renderHistory(); $("modal-history").classList.remove("hidden"); });
+$("btn-close-history").addEventListener("click", () => $("modal-history").classList.add("hidden"));
+$("modal-history").addEventListener("click", (event) => { if (event.target === $("modal-history")) $("modal-history").classList.add("hidden"); });
+const userAgent = navigator.userAgent;
+const isChrome = /Chrome\//.test(userAgent) && !/Edg\//.test(userAgent) && !/OPR\//.test(userAgent);
+if (!isChrome) els.browserWarning.classList.remove("hidden");
 init();

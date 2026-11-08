@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node generator.js",
     "tts": "python tts.py",
-    "dev": "node generator.js"
+    "dev": "node generator.js",
+    "renumber-ids": "node renumber-output-ids.js"
   },
   "dependencies": {
     "@mistralai/mistralai": "^1.2.0"
