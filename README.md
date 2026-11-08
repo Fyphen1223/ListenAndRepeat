@@ -13,6 +13,10 @@ cd C:\Users\Shuto\Desktop\Code\ListenAndRepeat
 npm install
 ```
 
+練習画面ではリポジトリ内の`vendor/compromise.js`（ブラウザ向け`compromise`）を使って、認識テキストを品詞解析します。
+内容語（名詞・動詞・形容詞・副詞）と機能語を区別し、Listen and Repeatの補助評価
+（内容語の再現率・機能語・語順）に利用します。これはETSの公式採点エンジンではありません。
+
 ### 2. API Key を設定
 
 `env.json` を編集し、使うサービスの API Key を入力してください。複数入れておくと、各サービスの複数モデルをランダムに切り替えながら生成し、429 を返したモデルは一時的に避けます。

@@ -86,9 +86,6 @@
             <i class="fa-brands fa-chrome"></i>
             この練習はChromeでの利用を推奨します。Chromeで開いてください。
           </div>
-          <span class="instruction-note"
-            >本番再現モードでは、各文を1回だけ聞いた後、最大8〜12秒で録音します。これは公式問題ではない練習コンテンツです。</span
-          >
         </div>
 
         <section class="scenario-card">
@@ -96,20 +93,13 @@
             <div class="prompt-label">SCENARIO</div>
             <h1 id="topic-title">--</h1>
             <p id="context-text">--</p>
-            <p class="scenario-note">
-              <i class="fa-solid fa-circle-info"></i>
-              専門知識は必要ありません。場面は聞き取りの補助です。
-            </p>
           </div>
           <div
             class="scene-placeholder"
             role="img"
-            aria-label="シナリオ画像プレースホルダー"
+            aria-label="シナリオイラスト"
           >
-            <div class="scene-window">
-              <i class="fa-solid fa-image"></i
-              ><span>Scenario image<br />placeholder</span>
-            </div>
+            <div id="scene-illustration" class="scene-illustration"></div>
             <div id="scene-location" class="scene-location">
               場面を読み込み中
             </div>
@@ -221,6 +211,7 @@
         <div id="history-list" class="modal-body"></div>
       </div>
     </div>
+    <script src="./vendor/compromise.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

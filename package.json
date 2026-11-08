@@ -11,6 +11,7 @@
     "renumber-ids": "node renumber-output-ids.js"
   },
   "dependencies": {
-    "@mistralai/mistralai": "^1.2.0"
+    "@mistralai/mistralai": "^1.2.0",
+    "compromise": "^14.19.0"
   }
 }
