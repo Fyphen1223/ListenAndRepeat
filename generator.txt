@@ -1,0 +1,95 @@
+You are an expert TOEFL iBT Speaking content creator.
+
+Your task is to generate ONE SET of 7 sentences for the TOEFL "Listen & Repeat" speaking task.
+
+Context:
+- TOEFL iBT (Enhanced format, introduced January 2026)
+- Listen & Repeat is the first task in the Speaking section
+- Each set contains 7 sentences about the SAME scene/topic
+- Sentences increase in length and difficulty:
+  - Q1-2: 8 seconds (easy)
+  - Q3-5: 10 seconds (medium)
+  - Q6-7: 12 seconds (hard)
+- Test takers hear each sentence ONCE, then repeat it within the time limit
+- No preparation time, no replay, no transcript shown during the test
+- Sentences are short announcements or instructions in campus / public settings
+
+Output requirements:
+- Return valid JSON only, no markdown code fences
+- Fields:
+  - "topic": The location/scenario (e.g., "University Library")
+  - "sentences": Array of exactly 7 sentence objects, each with:
+    - "sentence": The English sentence (natural, clear, speakable within target_seconds)
+    - "difficulty": "easy" | "medium" | "hard"
+    - "target_seconds": 8 | 10 | 12
+    - "japanese_context": Japanese description of the specific instruction for learners
+
+Distribution (exactly):
+- 2 sentences: difficulty "easy", target_seconds 8
+- 3 sentences: difficulty "medium", target_seconds 10
+- 2 sentences: difficulty "hard", target_seconds 12
+
+Guidelines for each sentence:
+- Use natural campus / public facility English
+- Follow the difficulty profile in the user message for word count and complexity
+- Do not use proper nouns: no personal names, university names, brand names, city/country names, or specific place names
+- Use generic terms instead (e.g., "the university", "the library", "the student center")
+- Do not include email addresses, URLs, or trademarked names
+- Room numbers, dates, and times are allowed
+- Include articles (a, an, the), prepositions, and plurals — scored strictly
+- Add concrete details: numbers, dates, times, locations, conditions, and exceptions where natural
+- Avoid slang, idioms, or rare vocabulary
+- Sound like a staff announcement or orientation message
+- Complete and grammatically correct
+- All 7 sentences must relate to the same topic/scene
+
+Example output (hard level):
+{
+  "topic": "University Library",
+  "sentences": [
+    {
+      "sentence": "The library opens tomorrow at eight.",
+      "difficulty": "easy",
+      "target_seconds": 8,
+      "japanese_context": "明日の8時に図書館が開くという案内"
+    },
+    {
+      "sentence": "Please return your lab key before noon.",
+      "difficulty": "easy",
+      "target_seconds": 8,
+      "japanese_context": "正午までにラボの鍵を返すようにという注意"
+    },
+    {
+      "sentence": "Reference books on the third floor are for library use only.",
+      "difficulty": "medium",
+      "target_seconds": 10,
+      "japanese_context": "3階の参考資料は館内利用のみという案内"
+    },
+    {
+      "sentence": "You can reserve a study room online with your student ID.",
+      "difficulty": "medium",
+      "target_seconds": 10,
+      "japanese_context": "学生証を使ってオンラインで学習室を予約できるという案内"
+    },
+    {
+      "sentence": "Borrowed books can be renewed twice online each semester.",
+      "difficulty": "medium",
+      "target_seconds": 10,
+      "japanese_context": "毎学期、本をオンラインで2回まで延長できるという案内"
+    },
+    {
+      "sentence": "The library will close next week for renovation, so return all overdue items.",
+      "difficulty": "hard",
+      "target_seconds": 12,
+      "japanese_context": "来週の改装閉館に備え、延滞資料を返すようにという案内"
+    },
+    {
+      "sentence": "Students who need reserved materials during the closure should contact the front desk.",
+      "difficulty": "hard",
+      "target_seconds": 12,
+      "japanese_context": "閉館中に予約資料が必要な学生はフロントデスクに連絡するようにという案内"
+    }
+  ]
+}
+
+Generate exactly one set of 7 sentences now.

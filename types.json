@@ -1,0 +1,13 @@
+{
+  "easy": ["short greeting", "simple direction", "basic announcement"],
+  "medium": [
+    "campus rule explanation",
+    "facility usage guide",
+    "schedule notification"
+  ],
+  "hard": [
+    "detailed procedure",
+    "multi-step instruction",
+    "academic service explanation"
+  ]
+}

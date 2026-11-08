@@ -1,0 +1,15 @@
+{
+  "name": "toefl-listen-repeat-generator",
+  "version": "1.0.0",
+  "description": "TOEFL Listen & Repeat text generator using Mistral API",
+  "main": "generator.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node generator.js",
+    "tts": "python tts.py",
+    "dev": "node generator.js"
+  },
+  "dependencies": {
+    "@mistralai/mistralai": "^1.2.0"
+  }
+}
