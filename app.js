@@ -163,22 +163,45 @@ function longestCommonSubsequence(left, right) {
   return matrix[left.length][right.length];
 }
 
+function fluencyMetrics(target, actual, startedAt, skipped) {
+  const words = normalize(actual).split(" ").filter(Boolean);
+  const targetWords = normalize(target).split(" ").filter(Boolean);
+  const targetCounts = new Map();
+  targetWords.forEach((word) => targetCounts.set(word, (targetCounts.get(word) || 0) + 1));
+  let extraWords = 0;
+  words.forEach((word) => {
+    const remaining = targetCounts.get(word) || 0;
+    if (remaining > 0) targetCounts.set(word, remaining - 1);
+    else extraWords++;
+  });
+  const fillerMatches = actual.match(/\b(?:uh+|um+|er+|hmm+|you know|like)\b/gi) || [];
+  const responseSeconds = skipped || !startedAt ? null : Math.max(0, (Date.now() - startedAt) / 1000);
+  return {
+    responseSeconds: responseSeconds == null ? null : Math.round(responseSeconds * 10) / 10,
+    wordsPerMinute: responseSeconds && words.length
+      ? Math.round(words.length / (responseSeconds / 60))
+      : null,
+    fillerCount: fillerMatches.length,
+    extraWordCount: extraWords,
+  };
+}
+
 function estimateBand(metrics, transcript) {
   if (!transcript.trim() || metrics.contentCoverage === 0) return 0;
   if (metrics.exact) return 5;
-  if (metrics.contentCoverage >= 90 && metrics.orderAccuracy >= 80 &&
-      metrics.functionAccuracy >= 70) return 4;
-  if (metrics.contentCoverage >= 60 && metrics.orderAccuracy >= 55) return 3;
-  if (metrics.contentCoverage >= 35) return 2;
+  if (metrics.contentCoverage >= 80 && metrics.orderAccuracy >= 65 &&
+      metrics.functionAccuracy >= 50) return 4;
+  if (metrics.contentCoverage >= 50 && metrics.orderAccuracy >= 40) return 3;
+  if (metrics.contentCoverage >= 25) return 2;
   return 1;
 }
 
-function saveAttempt(sentence, transcript, score, band, confidence = null, combinedScore = score, skipped = false, metrics = null) {
+function saveAttempt(sentence, transcript, score, band, confidence = null, combinedScore = score, skipped = false, metrics = null, fluency = null) {
   const data = stored();
   data.attempts.unshift({
     id: currentSet().id, sentenceIndex: state.sentenceIndex, topic: currentSet().topic,
     target: sentence.sentence, transcript, similarity: score, confidence,
-    combinedScore, estimatedBand: band, rubricMetrics: metrics,
+    combinedScore, estimatedBand: band, rubricMetrics: metrics, fluencyMetrics: fluency,
     skipped, timestamp: new Date().toISOString(),
   });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -439,17 +462,18 @@ function showFeedback(text, skipped = false, label = "") {
   }
   const score = wordSimilarity(sentence.sentence, text);
   const metrics = rubricMetrics(sentence.sentence, text);
+  const fluency = fluencyMetrics(sentence.sentence, text, state.responseStartedAt, skipped);
   const confidence = skipped ? null : state.recognitionConfidence;
   const combinedScore = score;
   const band = skipped ? 0 : estimateBand(metrics, text);
-  saveAttempt(sentence, text, skipped ? 0 : score, band, confidence, skipped ? 0 : combinedScore, skipped, metrics);
+  saveAttempt(sentence, text, skipped ? 0 : score, band, confidence, skipped ? 0 : combinedScore, skipped, metrics, fluency);
   const result = {
     setId: currentSet().id,
     index: state.sentenceIndex + 1,
     target: sentence.sentence,
     transcript: text,
     audioSrc: `./audio/${encodeURIComponent(currentSet().id)}/${encodeURIComponent(currentSet().id)}-${state.sentenceIndex + 1}.wav`,
-    band, score, confidence, metrics,
+    band, score, confidence, metrics, fluency,
     userAudioSrc: null,
   };
   state.results.push(result);
@@ -627,6 +651,10 @@ function showEnd() {
         <span>機能語 <strong>${item.metrics ? item.metrics.functionAccuracy : "-"}%</strong></span>
         <span>語順 <strong>${item.metrics ? item.metrics.orderAccuracy : "-"}%</strong></span>
         <span>confidence <strong>${item.confidence == null ? "取得不可" : `${Math.round(item.confidence * 100)}%`}</strong></span>
+        <span>回答時間 <strong>${item.fluency && item.fluency.responseSeconds != null ? `${item.fluency.responseSeconds}秒` : "-"}</strong></span>
+        <span>発話速度 <strong>${item.fluency && item.fluency.wordsPerMinute != null ? `${item.fluency.wordsPerMinute}語/分` : "-"}</strong></span>
+        <span>フィラー <strong>${item.fluency ? item.fluency.fillerCount : "-"}</strong></span>
+        <span>余分な語 <strong>${item.fluency ? item.fluency.extraWordCount : "-"}</strong></span>
       </div>
     </article>`).join("");
 }
