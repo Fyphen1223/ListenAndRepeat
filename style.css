@@ -1251,6 +1251,16 @@ body {
   color: var(--ets-navy);
 }
 
+.result-diagnostics {
+  background: #fff7ed;
+  border-left: 3px solid #f59e0b;
+  color: #92400e;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin-top: 0.7rem;
+  padding: 0.45rem 0.6rem;
+}
+
 .set-results {
   display: grid;
   gap: 0.75rem;

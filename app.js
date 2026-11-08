@@ -12,6 +12,7 @@ const state = {
   autoAdvanceTimer: null, examStarted: false, responsePending: false,
   results: [],
   endShown: false,
+  synonyms: {},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -98,13 +99,26 @@ function analyzedTokens(text) {
   if (typeof window.nlp !== "function") {
     return normalize(source).split(" ").filter(Boolean).map((word) => ({
       word,
+      pos: "Other",
       isContent: !functionWords.has(word),
     }));
   }
   return window.nlp(source).terms().data().flatMap((term) => term.terms.map((item) => ({
-    word: item.normal || normalize(item.text),
+    word: normalizeWord(item.normal || normalize(item.text)),
+    pos: item.tags.find((tag) => ["Noun", "Verb", "Adjective", "Adverb"].includes(tag)) || "Other",
     isContent: item.tags.some((tag) => ["Noun", "Verb", "Adjective", "Adverb"].includes(tag)),
   }))).filter((item) => item.word);
+}
+
+function normalizeWord(word) {
+  const value = String(word || "").toLowerCase();
+  if (typeof functionWords !== "undefined" && functionWords.has(value)) return value;
+  if (value.length > 5 && value.endsWith("ies")) return `${value.slice(0, -3)}y`;
+  if (value.length > 4 && value.endsWith("ing")) return value.slice(0, -3);
+  if (value.length > 4 && value.endsWith("ed")) return value.slice(0, -2);
+  if (value.length > 4 && value.endsWith("es")) return value.slice(0, -2);
+  if (value.length > 3 && value.endsWith("s") && !value.endsWith("ss")) return value.slice(0, -1);
+  return value;
 }
 
 function wordSimilarity(target, actual) {
@@ -125,6 +139,53 @@ function wordSimilarity(target, actual) {
 const functionWords = new Set(
   "a an the and or but so if because as at by for from in into of on onto to with without about after before during over under up down is am are was were be been being do does did have has had can could may might must shall should will would this that these those it its i you he she we they".split(" "),
 );
+const criticalWords = new Set("not never no none nobody nothing neither nor only always must should cannot can't".split(" "));
+const quantityWords = new Set("one two three four five six seven eight nine ten many much more less few several all both each every first second".split(" "));
+
+function wordWeight(token) {
+  if (criticalWords.has(token.word) || quantityWords.has(token.word)) return 4;
+  if (token.isContent) return 3;
+  return 0.5;
+}
+
+function tokenEquivalent(expected, heard) {
+  if (expected.word === heard.word) return "exact";
+  if (!expected.isContent || !heard.isContent || expected.pos !== heard.pos) return false;
+  const alternatives = state.synonyms[`${expected.pos.toLowerCase()}:${expected.word}`] || [];
+  return alternatives.includes(heard.word) ? "synonym" : false;
+}
+
+function weightedSimilarity(expectedTokens, heardTokens) {
+  const expected = expectedTokens.map((token) => token.word);
+  const heard = heardTokens.map((token) => token.word);
+  const weights = expectedTokens.map(wordWeight);
+  const matrix = Array.from({ length: expected.length + 1 }, () => new Array(heard.length + 1).fill(0));
+  for (let i = 1; i <= expected.length; i++) {
+    for (let j = 1; j <= heard.length; j++) {
+      const matchType = tokenEquivalent(expectedTokens[i - 1], heardTokens[j - 1]);
+      const match = matchType === "exact" ? weights[i - 1] : matchType === "synonym" ? weights[i - 1] * 0.8 : 0;
+      matrix[i][j] = Math.max(matrix[i - 1][j], matrix[i][j - 1], matrix[i - 1][j - 1] + match);
+    }
+  }
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const synonymMatches = expectedTokens.filter((token) =>
+    heardTokens.some((heardToken) => tokenEquivalent(token, heardToken) === "synonym")).length;
+  return {
+    score: total ? Math.round((matrix[expected.length][heard.length] / total) * 100) : 0,
+    synonymMatches,
+  };
+}
+
+function phraseScore(expected, heard) {
+  if (expected.length < 2 || heard.length < 2) return 0;
+  const heardPhrases = new Set();
+  for (let index = 0; index < heard.length - 1; index++) heardPhrases.add(`${heard[index]} ${heard[index + 1]}`);
+  let matches = 0;
+  for (let index = 0; index < expected.length - 1; index++) {
+    if (heardPhrases.has(`${expected[index]} ${expected[index + 1]}`)) matches++;
+  }
+  return Math.round((matches / (expected.length - 1)) * 100);
+}
 
 function rubricMetrics(target, actual) {
   const expectedTokens = analyzedTokens(target);
@@ -133,8 +194,10 @@ function rubricMetrics(target, actual) {
   const heard = heardTokens.map((token) => token.word);
   const expectedContent = expectedTokens.filter((token) => token.isContent).map((token) => token.word);
   const heardSet = new Set(heardTokens.map((token) => token.word));
+  const contentMatches = expectedTokens.filter((token) => token.isContent &&
+    heardTokens.some((heardToken) => tokenEquivalent(token, heardToken)));
   const contentCoverage = expectedContent.length
-    ? Math.round((expectedContent.filter((word) => heardSet.has(word)).length / expectedContent.length) * 100)
+    ? Math.round((contentMatches.length / expectedContent.length) * 100)
     : 0;
   const expectedFunction = expectedTokens.filter((token) => !token.isContent).map((token) => token.word);
   const functionAccuracy = expectedFunction.length
@@ -143,11 +206,23 @@ function rubricMetrics(target, actual) {
   const orderAccuracy = expected.length && heard.length
     ? Math.round((longestCommonSubsequence(expected, heard) / expected.length) * 100)
     : 0;
+  const weighted = weightedSimilarity(expectedTokens, heardTokens);
+  const phrases = phraseScore(expected, heard);
+  const criticalErrors = expectedTokens
+    .filter((token) => criticalWords.has(token.word) || quantityWords.has(token.word))
+    .filter((token) => !heardSet.has(token.word))
+    .map((token) => token.word);
+  const missingContent = expectedContent.filter((word) => !heardSet.has(word));
   return {
     exact: normalize(target) === normalize(actual),
     contentCoverage,
     functionAccuracy,
     orderAccuracy,
+    weightedScore: weighted.score,
+    synonymMatches: weighted.synonymMatches,
+    phraseScore: phrases,
+    criticalErrors,
+    missingContent,
   };
 }
 
@@ -189,10 +264,10 @@ function fluencyMetrics(target, actual, startedAt, skipped) {
 function estimateBand(metrics, transcript) {
   if (!transcript.trim() || metrics.contentCoverage === 0) return 0;
   if (metrics.exact) return 5;
-  if (metrics.contentCoverage >= 80 && metrics.orderAccuracy >= 65 &&
-      metrics.functionAccuracy >= 50) return 4;
-  if (metrics.contentCoverage >= 50 && metrics.orderAccuracy >= 40) return 3;
-  if (metrics.contentCoverage >= 25) return 2;
+  if (metrics.criticalErrors.length === 0 && metrics.weightedScore >= 78 &&
+      metrics.contentCoverage >= 75 && metrics.orderAccuracy >= 55) return 4;
+  if (metrics.weightedScore >= 52 && metrics.contentCoverage >= 45) return 3;
+  if (metrics.weightedScore >= 25 || metrics.contentCoverage >= 25) return 2;
   return 1;
 }
 
@@ -209,8 +284,12 @@ function saveAttempt(sentence, transcript, score, band, confidence = null, combi
 
 async function init() {
   try {
-    const response = await fetch("./output.jsonl");
+    const [response, synonymResponse] = await Promise.all([
+      fetch("./output.jsonl"),
+      fetch("./vendor/wordnet-synonyms.json"),
+    ]);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (synonymResponse.ok) state.synonyms = await synonymResponse.json();
     state.sets = (await response.text()).split(/\r?\n/).filter(Boolean).map(JSON.parse)
       .filter((set) => Array.isArray(set.sentences) && set.sentences.length === 7);
     if (!state.sets.length) throw new Error("7文セットが見つかりません。");
@@ -484,7 +563,7 @@ function showFeedback(text, skipped = false, label = "") {
   els.feedback.className = `feedback-panel ${band >= 4 ? "correct" : band >= 3 ? "review" : "incorrect"}`;
   const confidenceText = confidence == null ? "取得不可" : `${Math.round(confidence * 100)}%`;
   els.feedbackHeader.textContent = skipped ? `${label || "スキップ"}（推定 0 / 5）` : `推定 ${band} / 5　（一致度 ${score}%）`;
-  els.feedbackBody.innerHTML = `<div class="score-details"><span>単語一致度 <strong>${score}%</strong></span><span>内容語 <strong>${metrics.contentCoverage}%</strong></span><span>機能語 <strong>${metrics.functionAccuracy}%</strong></span><span>語順 <strong>${metrics.orderAccuracy}%</strong></span><span>認識confidence <strong>${confidenceText}</strong></span></div><small>詳細な認識結果と問題文は、セット完了後の結果カードで確認できます。</small>`;
+  els.feedbackBody.innerHTML = `<div class="score-details"><span>重み付き一致度 <strong>${metrics.weightedScore}%</strong></span><span>内容語 <strong>${metrics.contentCoverage}%</strong></span><span>語順 <strong>${metrics.orderAccuracy}%</strong></span><span>認識confidence <strong>${confidenceText}</strong></span></div><small>詳細な認識結果と問題文は、セット完了後の結果カードで確認できます。</small>`;
   els.next.classList.remove("hidden"); els.showAnswer.classList.add("hidden");
   els.record.disabled = true; els.skip.disabled = true;
   els.responseCountdown.textContent = "完了";
@@ -646,16 +725,25 @@ function showEnd() {
         </div>
       </div>
       <div class="result-score-details">
+        <span>重み付き一致度 <strong>${item.metrics ? item.metrics.weightedScore : item.score}%</strong></span>
         <span>単語一致度 <strong>${item.score}%</strong></span>
         <span>内容語 <strong>${item.metrics ? item.metrics.contentCoverage : "-"}%</strong></span>
         <span>機能語 <strong>${item.metrics ? item.metrics.functionAccuracy : "-"}%</strong></span>
         <span>語順 <strong>${item.metrics ? item.metrics.orderAccuracy : "-"}%</strong></span>
+        <span>フレーズ <strong>${item.metrics ? item.metrics.phraseScore : "-"}%</strong></span>
+        <span>同義語補助 <strong>${item.metrics ? item.metrics.synonymMatches : "-"}語</strong></span>
         <span>confidence <strong>${item.confidence == null ? "取得不可" : `${Math.round(item.confidence * 100)}%`}</strong></span>
         <span>回答時間 <strong>${item.fluency && item.fluency.responseSeconds != null ? `${item.fluency.responseSeconds}秒` : "-"}</strong></span>
         <span>発話速度 <strong>${item.fluency && item.fluency.wordsPerMinute != null ? `${item.fluency.wordsPerMinute}語/分` : "-"}</strong></span>
         <span>フィラー <strong>${item.fluency ? item.fluency.fillerCount : "-"}</strong></span>
         <span>余分な語 <strong>${item.fluency ? item.fluency.extraWordCount : "-"}</strong></span>
       </div>
+      ${item.metrics && (item.metrics.criticalErrors.length || item.metrics.missingContent.length)
+        ? `<div class="result-diagnostics"><strong>確認ポイント:</strong> ${safe([
+          item.metrics.criticalErrors.length ? `重要語の不足: ${item.metrics.criticalErrors.join(", ")}` : "",
+          item.metrics.missingContent.length ? `不足している内容語: ${item.metrics.missingContent.join(", ")}` : "",
+        ].filter(Boolean).join(" / "))}</div>`
+        : ""}
     </article>`).join("");
 }
 

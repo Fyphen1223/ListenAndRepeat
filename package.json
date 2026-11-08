@@ -8,10 +8,14 @@
     "start": "node generator.js",
     "tts": "python tts.py",
     "dev": "node generator.js",
-    "renumber-ids": "node renumber-output-ids.js"
+    "renumber-ids": "node renumber-output-ids.js",
+    "build:synonyms": "node generate-wordnet-synonyms.js"
   },
   "dependencies": {
     "@mistralai/mistralai": "^1.2.0",
     "compromise": "^14.19.0"
+  },
+  "devDependencies": {
+    "wordnet-db": "^3.1.14"
   }
 }
