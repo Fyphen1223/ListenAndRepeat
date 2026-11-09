@@ -1,0 +1,12 @@
+exclude:
+  - README.md
+  - errors.log
+  - generator.js
+  - generator.txt
+  - generate-wordnet-synonyms.js
+  - renumber-output-ids.js
+  - tts.py
+  - topics.json
+  - types.json
+  - package.json
+  - package-lock.json
