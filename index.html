@@ -37,6 +37,7 @@
           <span id="badge-difficulty" class="meta-tag skill-badge"
             >Difficulty: -</span
           >
+          <span id="badge-voice" class="meta-tag">Voice: -</span>
         </div>
         <div class="filter-controls">
           <label class="filter-group" for="filter-mode"
@@ -57,13 +58,35 @@
               <option value="hard">Hard</option>
             </select>
           </label>
+          <label class="filter-group" for="filter-unit"
+            >Unit:
+            <select id="filter-unit" class="filter-select">
+              <option value="set">セットごと</option>
+              <option value="question">問題ごと</option>
+            </select>
+          </label>
+          <label class="filter-group" for="filter-voice"
+            >Voice:
+            <select id="filter-voice" class="filter-select voice-select">
+              <option value="all">すべてのアクセント</option>
+            </select>
+          </label>
           <div class="jump-control">
-            <label class="filter-group" for="question-id-input">問題ID:</label>
+            <label class="filter-group" for="question-id-input">セットID:</label>
             <input
               id="question-id-input"
               class="question-id-input"
               inputmode="numeric"
               placeholder="例: 42"
+            />
+            <label class="filter-group" for="question-number-input">番号:</label>
+            <input
+              id="question-number-input"
+              class="question-id-input question-number-input"
+              inputmode="numeric"
+              min="1"
+              max="7"
+              placeholder="1-7"
             />
             <button id="btn-jump-id" class="btn-jump">移動</button>
           </div>
@@ -179,7 +202,14 @@
         <h2>Listen & Repeat 完了</h2>
         <p id="final-stats" class="final-stats"></p>
         <div id="set-results" class="set-results"></div>
-        <button id="btn-restart" class="btn-ets primary">もう一度練習</button>
+        <div class="end-actions">
+          <button id="btn-retry-session" class="btn-ets primary">
+            同じ問題をもう一度
+          </button>
+          <button id="btn-restart" class="btn-ets secondary">
+            新しい問題で練習
+          </button>
+        </div>
       </div>
     </main>
 

@@ -177,6 +177,10 @@ body {
   min-width: 48px;
 }
 
+.voice-select {
+  max-width: 220px;
+}
+
 .filter-select:hover,
 .filter-select:focus {
   border-color: var(--ets-blue);
@@ -201,6 +205,10 @@ body {
 .question-id-input:focus {
   border-color: var(--ets-blue);
   outline: none;
+}
+
+.question-number-input {
+  width: 48px;
 }
 
 .btn-jump {
@@ -495,6 +503,14 @@ body {
 .btn-ets:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-top: 1.5rem;
 }
 
 .hidden {

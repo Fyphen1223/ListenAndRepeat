@@ -244,9 +244,52 @@ audio/
 - 各セットは**1つの声（speaker）**で統一（`tts.py` の `SPEAKERS` 配列からランダム割り当て）
 - 話速は**文ごとに 0.9〜1.2 でランダム**に散らします
 - ファイル名は `<セット番号>-<文番号>.wav`（例：`1-1.wav`, `1-7.wav`）
-- 既存の WAV は既定でスキップされます（`--force` で上書き）
+- 既存の WAV は既定でスキップされます（`--force` で上書きし、`SPEAKERS` から声も再抽選）
 
-### 4. スピーカー（声）の変更
+### 4. output.jsonl への音声メタデータ書き戻し
+
+`tts.py` は音声を生成すると、`output.jsonl` の各文に `audio` フィールドを追加します。
+どのファイルを・どの声・どの話速で・どの難易度として生成したかが分かります。
+
+```json
+{
+  "sentence": "Welcome to the university library.",
+  "difficulty": "easy",
+  "target_seconds": 8,
+  "japanese_context": "大学図書館へようこそという案内",
+  "audio": {
+    "file": "audio/1/1-1.wav",
+    "set_id": 1,
+    "question_number": 1,
+    "difficulty": "easy",
+    "voice": "af_bella",
+    "speed": 1.07
+  }
+}
+```
+
+セット（1レコード）側にも、記録済みの文がある場合は `tts` フィールドが追加されます。
+
+```json
+{
+  "tts": {
+    "engine": "kokoro",
+    "sample_rate": 24000,
+    "voice": "af_bella",
+    "recorded_count": 7,
+    "updated_at": "2026-11-09T12:34:56Z"
+  }
+}
+```
+
+- `voice` / `speed` は生成時に記録されます
+- `--force` を指定すると、既存セットも `SPEAKERS` に追加した声を含めて再抽選されます。
+- 既存の WAV をスキップした場合、以前のメタデータがあればそれを保持します
+- メタデータがない既存 WAV をスキップした場合は `voice` / `speed` が `null` になります。
+  記録したい場合は `python tts.py --force` で再生成してください
+- セット内で複数の声が混在している場合、`tts.voice` は `"mixed"` になります
+
+### 5. スピーカー（声）の変更
 
 `tts.py` の `SPEAKERS` 配列を編集すると、使用する声を変更できます。
 
@@ -260,6 +303,22 @@ SPEAKERS = [
     # ... 追加・削除可能
 ]
 ```
+
+## 練習画面の出題単位と声の選択
+
+練習画面の上部にある `Unit` と `Voice` で出題を絞り込めます。
+
+- `Unit: セットごと` — 従来どおり、1セット7文を順番に解きます。
+- `Unit: 問題ごと` — セットを分解し、1文を1問として出題します。`次の問題` で別のセットの問題にも進みます。
+- `Voice: すべてのアクセント` — すべての音声を対象にします。
+- `Voice: American English / British English` — アクセントで絞り込みます。
+- `Voice: af_bella など` — 特定の声で絞り込みます。
+
+`Unit: 問題ごと` のときに問題IDへセットIDを入力して移動すると、そのセットの7問だけを1問ずつ解けます。
+
+声の情報は `output.jsonl` の各文の `audio.voice`（`tts.py` が書き戻すメタデータ）を使用します。
+音声情報がない場合は「音声情報なし」と表示され、声の絞り込みはできません。
+`python tts.py --force` で再生成すると声の情報が記録されます。
 
 ## 注意
 

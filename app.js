@@ -2,7 +2,9 @@
 
 const STORAGE_KEY = "toefl_listen_repeat_v2";
 const state = {
-  sets: [], questions: [], setIndex: 0, sentenceIndex: 0,
+  sets: [], questions: [], questionQueue: [], unit: "set",
+  setIndex: 0, sentenceIndex: 0, questionIndex: 0,
+  sessionStart: { setIndex: 0, sentenceIndex: 0, questionIndex: 0 },
   timer: null, responseTimer: null, responseSeconds: 0, responseStartedAt: 0,
   recognition: null, recording: false, audioPlayed: false, answered: false, timedOut: false,
   recognitionConfidence: null,
@@ -13,15 +15,17 @@ const state = {
   results: [],
   endShown: false,
   synonyms: {},
+  recordingGeneration: 0,
 };
 
 const $ = (id) => document.getElementById(id);
 const els = {
   loading: $("loading"), quiz: $("quiz-screen"), empty: $("empty-screen"), end: $("end-screen"),
   counter: $("q-counter"), sentenceCounter: $("sentence-counter"), topic: $("badge-topic"),
-  questionId: $("badge-id"), questionIdInput: $("question-id-input"), jumpId: $("btn-jump-id"),
+  questionId: $("badge-id"), questionIdInput: $("question-id-input"),
+  questionNumberInput: $("question-number-input"), jumpId: $("btn-jump-id"),
   jumpStatus: $("jump-status"),
-  difficulty: $("badge-difficulty"), topicTitle: $("topic-title"), context: $("context-text"),
+  difficulty: $("badge-difficulty"), voice: $("badge-voice"), topicTitle: $("topic-title"), context: $("context-text"),
   sceneLocation: $("scene-location"), progressLabel: $("progress-label"), progress: $("scenario-progress"),
   sceneIllustration: $("scene-illustration"),
   progressCaption: $("progress-caption"), targetTime: $("target-time"), audio: $("audio-player"),
@@ -30,7 +34,7 @@ const els = {
   feedback: $("feedback-panel"), feedbackHeader: $("feedback-header"), feedbackBody: $("feedback-body"),
   next: $("btn-next"), skip: $("btn-skip"), showAnswer: $("btn-show-answer"),
   timer: $("timer-display"), finalStats: $("final-stats"), setResults: $("set-results"),
-  browserWarning: $("browser-warning"),
+  retry: $("btn-retry-session"), browserWarning: $("browser-warning"),
 };
 
 function stored() {
@@ -42,9 +46,118 @@ function stored() {
   }
 }
 
-function currentSet() { return state.questions[state.setIndex]; }
-function currentSentence() { return currentSet().sentences[state.sentenceIndex]; }
+function currentUnit() {
+  if (state.unit === "question") {
+    return state.questionQueue[state.questionIndex] || null;
+  }
+  const set = state.questions[state.setIndex];
+  return set ? { set, sentence: set.sentences[state.sentenceIndex], sentenceIndex: state.sentenceIndex } : null;
+}
+function currentSet() { return currentUnit()?.set; }
+function currentSentence() { return currentUnit()?.sentence; }
 function mode() { return $("filter-mode").value; }
+
+function voiceMatchesSelection(voice, selection) {
+  if (selection === "all") return true;
+  if (!voice) return false;
+  if (selection === "accent:a") return voice.startsWith("a");
+  if (selection === "accent:b") return voice.startsWith("b");
+  return voice === selection;
+}
+
+function setMatchesVoice(set, selection) {
+  if (selection === "all") return true;
+  const setVoice = set.tts && set.tts.voice;
+  if (setVoice && setVoice !== "mixed") return voiceMatchesSelection(setVoice, selection);
+  return set.sentences.length > 0 &&
+    set.sentences.every((sentence) => voiceMatchesSelection(sentence?.audio?.voice, selection));
+}
+
+function questionMatchesVoice(set, sentence, selection) {
+  if (selection === "all") return true;
+  const voice = sentence?.audio?.voice;
+  if (voice) return voiceMatchesSelection(voice, selection);
+  const setVoice = set.tts && set.tts.voice;
+  return !!setVoice && setVoice !== "mixed" && voiceMatchesSelection(setVoice, selection);
+}
+
+function sentenceAudioSrc(set, sentence, sentenceIndex) {
+  const file = sentence?.audio?.file;
+  if (file) {
+    const segments = String(file).replace(/^\.?\//, "").split("/").filter(Boolean);
+    return `./${segments.map((segment) => encodeURIComponent(segment)).join("/")}`;
+  }
+  return `./audio/${encodeURIComponent(set.id)}/${encodeURIComponent(set.id)}-${sentenceIndex + 1}.wav`;
+}
+
+function populateVoiceOptions() {
+  const select = $("filter-voice");
+  const previous = select.value;
+  const voices = new Set();
+
+  state.sets.forEach((set) => {
+    if (set.tts && set.tts.voice && set.tts.voice !== "mixed") voices.add(set.tts.voice);
+    set.sentences.forEach((sentence) => {
+      const voice = sentence?.audio?.voice;
+      if (voice) voices.add(voice);
+    });
+  });
+
+  const groups = { af: [], am: [], bf: [], bm: [], other: [] };
+  [...voices].sort().forEach((voice) => {
+    const prefix = voice.slice(0, 2);
+    (groups[prefix] || groups.other).push(voice);
+  });
+
+  const groupLabels = {
+    af: "American English — Female",
+    am: "American English — Male",
+    bf: "British English — Female",
+    bm: "British English — Male",
+    other: "その他",
+  };
+
+  select.innerHTML = "";
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = "すべてのアクセント";
+  select.appendChild(allOption);
+
+  if (voices.size) {
+    const accentGroup = document.createElement("optgroup");
+    accentGroup.label = "アクセント";
+    const american = document.createElement("option");
+    american.value = "accent:a";
+    american.textContent = "American English（すべて）";
+    const british = document.createElement("option");
+    british.value = "accent:b";
+    british.textContent = "British English（すべて）";
+    accentGroup.append(american, british);
+    select.appendChild(accentGroup);
+
+    ["af", "am", "bf", "bm", "other"].forEach((prefix) => {
+      if (!groups[prefix].length) return;
+      const group = document.createElement("optgroup");
+      group.label = groupLabels[prefix];
+      groups[prefix].forEach((voice) => {
+        const option = document.createElement("option");
+        option.value = voice;
+        option.textContent = voice;
+        group.appendChild(option);
+      });
+      select.appendChild(group);
+    });
+  } else {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "音声情報なし（tts.py 実行後に選択可能）";
+    option.disabled = true;
+    select.appendChild(option);
+  }
+
+  const values = [...select.options].map((option) => option.value);
+  select.value = values.includes(previous) ? previous : "all";
+}
 
 function shuffle(items) {
   const shuffled = [...items];
@@ -272,9 +385,10 @@ function estimateBand(metrics, transcript) {
 }
 
 function saveAttempt(sentence, transcript, score, band, confidence = null, combinedScore = score, skipped = false, metrics = null, fluency = null) {
+  const unit = currentUnit();
   const data = stored();
   data.attempts.unshift({
-    id: currentSet().id, sentenceIndex: state.sentenceIndex, topic: currentSet().topic,
+    id: unit.set.id, sentenceIndex: unit.sentenceIndex, topic: unit.set.topic,
     target: sentence.sentence, transcript, similarity: score, confidence,
     combinedScore, estimatedBand: band, rubricMetrics: metrics, fluencyMetrics: fluency,
     skipped, timestamp: new Date().toISOString(),
@@ -293,6 +407,7 @@ async function init() {
     state.sets = (await response.text()).split(/\r?\n/).filter(Boolean).map(JSON.parse)
       .filter((set) => Array.isArray(set.sentences) && set.sentences.length === 7);
     if (!state.sets.length) throw new Error("7文セットが見つかりません。");
+    populateVoiceOptions();
     applyFilters();
     els.loading.classList.add("hidden");
   } catch (error) {
@@ -304,26 +419,73 @@ function applyFilters() {
   stopAllTimers();
   const difficulty = $("filter-difficulty").value;
   const selectedMode = mode();
+  const selectedVoice = $("filter-voice").value;
+  state.unit = $("filter-unit").value;
   const data = stored();
-  let filtered = state.sets.filter((set) => difficulty === "all" || set.sentences.some((s) => s.difficulty === difficulty));
   const attempts = new Set(data.attempts.map((a) => `${a.id}-${a.sentenceIndex}`));
-  if (selectedMode === "review") {
-    const mistakes = new Set(data.attempts.filter((a) => a.estimatedBand < 4 || a.similarity < 88).map((a) => `${a.id}-${a.sentenceIndex}`));
-    filtered = filtered.filter((set) => set.sentences.some((_, index) => mistakes.has(`${set.id}-${index}`)));
-  } else if (selectedMode === "unsolved") {
-    const unsolved = filtered.filter((set) => !attempts.has(`${set.id}-0`));
-    const solved = filtered.filter((set) => attempts.has(`${set.id}-0`));
-    filtered = [...shuffle(unsolved), ...shuffle(solved)];
+  const mistakes = new Set(
+    data.attempts
+      .filter((a) => a.estimatedBand < 4 || a.similarity < 88)
+      .map((a) => `${a.id}-${a.sentenceIndex}`)
+  );
+
+  let filteredSets = [];
+  let filteredQuestions = [];
+
+  if (state.unit === "question") {
+    // セットを分解し、1文＝1問としてキューを作る
+    state.sets.forEach((set) => {
+      set.sentences.forEach((sentence, sentenceIndex) => {
+        if (difficulty !== "all" && sentence.difficulty !== difficulty) return;
+        if (!questionMatchesVoice(set, sentence, selectedVoice)) return;
+        if (selectedMode === "review" && !mistakes.has(`${set.id}-${sentenceIndex}`)) return;
+        filteredQuestions.push({ set, sentence, sentenceIndex });
+      });
+    });
+    if (selectedMode === "unsolved") {
+      const unsolved = filteredQuestions.filter(
+        (question) => !attempts.has(`${question.set.id}-${question.sentenceIndex}`)
+      );
+      const solved = filteredQuestions.filter(
+        (question) => attempts.has(`${question.set.id}-${question.sentenceIndex}`)
+      );
+      filteredQuestions = [...shuffle(unsolved), ...shuffle(solved)];
+    } else {
+      filteredQuestions = shuffle(filteredQuestions);
+    }
+    // 本番モードでも、1セット分（7問）の問題を1問ずつ解けるようにする
+    const roundSize = state.sets[0]?.sentences.length || 7;
+    if (selectedMode === "exam") filteredQuestions = filteredQuestions.slice(0, roundSize);
   } else {
-    filtered = shuffle(filtered);
+    filteredSets = state.sets.filter((set) =>
+      (difficulty === "all" || set.sentences.some((sentence) => sentence.difficulty === difficulty)) &&
+      setMatchesVoice(set, selectedVoice)
+    );
+    if (selectedMode === "review") {
+      filteredSets = filteredSets.filter((set) =>
+        set.sentences.some((_, index) => mistakes.has(`${set.id}-${index}`))
+      );
+    } else if (selectedMode === "unsolved") {
+      const unsolved = filteredSets.filter((set) => !attempts.has(`${set.id}-0`));
+      const solved = filteredSets.filter((set) => attempts.has(`${set.id}-0`));
+      filteredSets = [...shuffle(unsolved), ...shuffle(solved)];
+    } else {
+      filteredSets = shuffle(filteredSets);
+    }
+    if (selectedMode === "exam") filteredSets = filteredSets.slice(0, 1);
   }
-  if (selectedMode === "exam") filtered = filtered.slice(0, 1);
-  state.questions = filtered;
+
+  state.questions = filteredSets;
+  state.questionQueue = filteredQuestions;
   state.setIndex = 0;
   state.sentenceIndex = 0;
+  state.questionIndex = 0;
+  state.sessionStart = { setIndex: 0, sentenceIndex: 0, questionIndex: 0 };
   state.results = [];
   state.endShown = false;
-  if (!filtered.length) {
+
+  const count = state.unit === "question" ? filteredQuestions.length : filteredSets.length;
+  if (!count) {
     els.quiz.classList.add("hidden"); els.end.classList.add("hidden"); els.empty.classList.remove("hidden");
   } else {
     els.empty.classList.add("hidden"); els.end.classList.add("hidden"); els.quiz.classList.remove("hidden"); render();
@@ -331,6 +493,7 @@ function applyFilters() {
 }
 
 function render() {
+  state.recordingGeneration++;
   clearTimeout(state.autoAdvanceTimer);
   if (!els.audio.paused) els.audio.pause();
   els.audio.currentTime = 0;
@@ -341,34 +504,42 @@ function render() {
     state.recognition = null;
   }
   state.recording = false;
-  const set = currentSet();
-  const sentence = currentSentence();
+  const unit = currentUnit();
+  const set = unit.set;
+  const sentence = unit.sentence;
+  const sentenceIndex = unit.sentenceIndex;
+  const sentenceCount = set.sentences.length;
   const maxSeconds = Math.max(8, Math.min(12, Number(sentence.target_seconds) || 10));
-  const location = ["場面の入口", "案内カウンター", "主要な設備", "利用エリア", "掲示・案内", "サービス窓口", "場面の出口"][state.sentenceIndex];
-  els.counter.textContent = `Set ${state.setIndex + 1} / ${state.questions.length}`;
-  els.sentenceCounter.textContent = `Sentence ${state.sentenceIndex + 1} / 7`;
+  const location = ["場面の入口", "案内カウンター", "主要な設備", "利用エリア", "掲示・案内", "サービス窓口", "場面の出口"][sentenceIndex] || "";
+  els.counter.textContent = state.unit === "question"
+    ? `Question ${state.questionIndex + 1} / ${state.questionQueue.length}`
+    : `Set ${state.setIndex + 1} / ${state.questions.length}`;
+  els.sentenceCounter.textContent = `Sentence ${sentenceIndex + 1} / ${sentenceCount}`;
   els.topic.textContent = `Topic: ${set.topic || "-"}`;
   els.questionId.textContent = `ID: ${set.id}`;
   els.difficulty.textContent = `Difficulty: ${sentence.difficulty || "medium"}`;
+  els.voice.textContent = `Voice: ${sentence.audio?.voice || set.tts?.voice || "-"}`;
   els.topicTitle.textContent = set.topic || "Campus situation";
   els.context.textContent = sentence.japanese_context || "キャンパス内の場面を説明する英文です。";
   els.sceneLocation.textContent = `現在地: ${location}`;
-  els.sceneIllustration.innerHTML = sceneIllustration(set.topic, state.sentenceIndex);
-  els.progressLabel.textContent = `${state.sentenceIndex + 1} / 7`;
+  els.sceneIllustration.innerHTML = sceneIllustration(set.topic, sentenceIndex);
+  els.progressLabel.textContent = `${sentenceIndex + 1} / ${sentenceCount}`;
   els.progress.innerHTML = "";
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < sentenceCount; i++) {
     const step = document.createElement("span");
-    step.className = `progress-step ${i < state.sentenceIndex ? "done" : ""} ${i === state.sentenceIndex ? "current" : ""}`;
+    step.className = `progress-step ${i < sentenceIndex ? "done" : ""} ${i === sentenceIndex ? "current" : ""}`;
     step.textContent = i + 1;
     step.setAttribute("aria-label", `Sentence ${i + 1}`);
     els.progress.appendChild(step);
   }
 
-  els.progressCaption.textContent = state.sentenceIndex === 0
-    ? "この場面の最初の文です。"
-    : state.sentenceIndex === 6 ? "最後の文です。聞こえた通りに再現しましょう。" : "場面の次の場所へ進みます。";
+  els.progressCaption.textContent = state.unit === "question"
+    ? `セット内の${sentenceIndex + 1}文目を解いています。`
+    : sentenceIndex === 0
+      ? "この場面の最初の文です。"
+      : sentenceIndex === sentenceCount - 1 ? "最後の文です。聞こえた通りに再現しましょう。" : "場面の次の場所へ進みます。";
   els.targetTime.textContent = `最大 ${maxSeconds} 秒`;
-  els.audio.src = `./audio/${encodeURIComponent(set.id)}/${encodeURIComponent(set.id)}-${state.sentenceIndex + 1}.wav`;
+  els.audio.src = sentenceAudioSrc(set, sentence, sentenceIndex);
   els.audio.load();
   state.audioPlayed = false; state.answered = false; state.timedOut = false;
   state.responsePending = false; state.recognitionConfidence = null;
@@ -384,26 +555,54 @@ function render() {
   els.start.classList.toggle("hidden", mode() !== "exam");
   els.play.classList.toggle("hidden", mode() === "exam");
   els.play.disabled = false; els.play.innerHTML = '<i class="fa-solid fa-volume-high"></i><span>音声を再生</span>';
+  els.next.innerHTML = state.unit === "question"
+    ? '次の問題 <i class="fa-solid fa-chevron-right"></i>'
+    : '次の文 <i class="fa-solid fa-chevron-right"></i>';
   els.recordingStatus.innerHTML = '<i class="fa-solid fa-microphone"></i> 待機中';
   startTimer();
 }
 
 function jumpToQuestionId() {
   const requestedId = els.questionIdInput.value.trim();
+  if (!requestedId) {
+    els.jumpStatus.textContent = "セットIDを入力してください";
+    els.jumpStatus.className = "jump-status error";
+    return;
+  }
   const target = state.sets.find((set) => String(set.id) === requestedId);
-  if (!requestedId || !target) {
+  if (!target) {
     els.jumpStatus.textContent = "該当するIDがありません";
     els.jumpStatus.className = "jump-status error";
     return;
   }
+
+  const rawNumber = els.questionNumberInput.value.trim();
+  const questionNumber = rawNumber === "" ? 1 : Number(rawNumber);
+  if (!Number.isInteger(questionNumber) || questionNumber < 1 || questionNumber > target.sentences.length) {
+    els.jumpStatus.textContent = `番号は 1〜${target.sentences.length} で指定してください`;
+    els.jumpStatus.className = "jump-status error";
+    return;
+  }
+
+  const sentenceIndex = questionNumber - 1;
   stopAllTimers();
-  state.questions = [target];
-  state.setIndex = 0;
-  state.sentenceIndex = 0;
+  if (state.unit === "question") {
+    state.questionQueue = target.sentences.map((sentence, index) => ({
+      set: target, sentence, sentenceIndex: index,
+    }));
+    state.questionIndex = sentenceIndex;
+    state.questions = [];
+  } else {
+    state.questions = [target];
+    state.setIndex = 0;
+    state.sentenceIndex = sentenceIndex;
+    state.questionQueue = [];
+  }
+  state.sessionStart = { setIndex: 0, sentenceIndex, questionIndex: sentenceIndex };
   state.results = [];
   state.endShown = false;
   els.questionIdInput.value = String(target.id);
-  els.jumpStatus.textContent = `ID ${target.id} を表示中`;
+  els.jumpStatus.textContent = `ID ${target.id} の ${questionNumber} 番を表示中`;
   els.jumpStatus.className = "jump-status success";
   els.empty.classList.add("hidden");
   els.end.classList.add("hidden");
@@ -461,17 +660,24 @@ function playBeep() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!AudioContext) return;
   const context = new AudioContext();
+  const start = context.currentTime;
+  const duration = 0.2;
+  const peak = 0.3;
   const oscillator = context.createOscillator();
   const gain = context.createGain();
-  oscillator.type = "sine";
-  oscillator.frequency.value = 880;
-  gain.gain.setValueAtTime(0.0001, context.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.16, context.currentTime + 0.01);
-  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.16);
+
+  // 元のビープより少し高く、輪郭を鋭くした三角波の単音
+  oscillator.type = "triangle";
+  oscillator.frequency.setValueAtTime(1000, start);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(peak, start + 0.005);
+  gain.gain.setValueAtTime(peak, start + duration - 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
   oscillator.connect(gain);
   gain.connect(context.destination);
-  oscillator.start();
-  oscillator.stop(context.currentTime + 0.18);
+  oscillator.start(start);
+  oscillator.stop(start + duration);
   oscillator.addEventListener("ended", () => context.close());
 }
 
@@ -534,7 +740,8 @@ function showFeedback(text, skipped = false, label = "") {
   if (state.answered) return;
   state.answered = true; state.responsePending = false;
   clearInterval(state.responseTimer); state.responseTimer = null;
-  const sentence = currentSentence();
+  const unit = currentUnit();
+  const sentence = unit.sentence;
   if (state.recording && state.recognition) {
     state.stopRequested = true;
     state.recognition.stop();
@@ -547,11 +754,11 @@ function showFeedback(text, skipped = false, label = "") {
   const band = skipped ? 0 : estimateBand(metrics, text);
   saveAttempt(sentence, text, skipped ? 0 : score, band, confidence, skipped ? 0 : combinedScore, skipped, metrics, fluency);
   const result = {
-    setId: currentSet().id,
-    index: state.sentenceIndex + 1,
+    setId: unit.set.id,
+    index: unit.sentenceIndex + 1,
     target: sentence.sentence,
     transcript: text,
-    audioSrc: `./audio/${encodeURIComponent(currentSet().id)}/${encodeURIComponent(currentSet().id)}-${state.sentenceIndex + 1}.wav`,
+    audioSrc: sentenceAudioSrc(unit.set, sentence, unit.sentenceIndex),
     band, score, confidence, metrics, fluency,
     userAudioSrc: null,
   };
@@ -563,13 +770,15 @@ function showFeedback(text, skipped = false, label = "") {
   els.feedback.className = `feedback-panel ${band >= 4 ? "correct" : band >= 3 ? "review" : "incorrect"}`;
   const confidenceText = confidence == null ? "取得不可" : `${Math.round(confidence * 100)}%`;
   els.feedbackHeader.textContent = skipped ? `${label || "スキップ"}（推定 0 / 5）` : `推定 ${band} / 5　（一致度 ${score}%）`;
-  els.feedbackBody.innerHTML = `<div class="score-details"><span>重み付き一致度 <strong>${metrics.weightedScore}%</strong></span><span>内容語 <strong>${metrics.contentCoverage}%</strong></span><span>語順 <strong>${metrics.orderAccuracy}%</strong></span><span>認識confidence <strong>${confidenceText}</strong></span></div><small>詳細な認識結果と問題文は、セット完了後の結果カードで確認できます。</small>`;
+  els.feedbackBody.innerHTML = `<div class="score-details"><span>重み付き一致度 <strong>${metrics.weightedScore}%</strong></span><span>内容語 <strong>${metrics.contentCoverage}%</strong></span><span>語順 <strong>${metrics.orderAccuracy}%</strong></span><span>認識confidence <strong>${confidenceText}</strong></span></div><small>詳細な認識結果と問題文は、完了後の結果カードで確認できます。</small>`;
   els.next.classList.remove("hidden"); els.showAnswer.classList.add("hidden");
   els.record.disabled = true; els.skip.disabled = true;
   els.responseCountdown.textContent = "完了";
   if (mode() === "exam") {
     els.next.classList.add("hidden");
-    els.listenStatus.textContent = "次の文へ自動で進みます...";
+    els.listenStatus.textContent = state.unit === "question"
+      ? "次の問題へ自動で進みます..."
+      : "次の文へ自動で進みます...";
     state.autoAdvanceTimer = setTimeout(nextSentence, 1200);
   }
 }
@@ -582,6 +791,8 @@ async function startRecording() {
     return;
   }
   const recognition = new Recognition();
+  const generation = ++state.recordingGeneration;
+  let restartPending = false;
   state.recognition = recognition;
   recognition.lang = "en-US";
   recognition.continuous = true;
@@ -589,12 +800,16 @@ async function startRecording() {
   recognition.maxAlternatives = 1;
   state.stopRequested = false;
   state.recordedChunks = [];
+  if (state.userAudioUrl && !state.results.some((result) => result.userAudioSrc === state.userAudioUrl)) {
+    URL.revokeObjectURL(state.userAudioUrl);
+  }
   state.userAudioUrl = null;
   if (navigator.mediaDevices && typeof MediaRecorder !== "undefined") {
     try {
       state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (state.answered || state.stopRequested || state.recognition !== recognition) {
+      if (generation !== state.recordingGeneration || state.answered || state.stopRequested || state.recognition !== recognition) {
         state.mediaStream.getTracks().forEach((track) => track.stop());
+        state.mediaStream = null;
         return;
       }
       const recorder = new MediaRecorder(state.mediaStream);
@@ -604,7 +819,7 @@ async function startRecording() {
         if (event.data.size > 0) recordedChunks.push(event.data);
       };
       recorder.onstop = () => {
-        if (recordedChunks.length) {
+        if (generation === state.recordingGeneration && recordedChunks.length) {
           state.userAudioUrl = URL.createObjectURL(new Blob(recordedChunks, { type: recorder.mimeType || "audio/webm" }));
           if (state.audioResultTarget && !state.audioResultTarget.userAudioSrc) {
             state.audioResultTarget.userAudioSrc = state.userAudioUrl;
@@ -625,6 +840,7 @@ async function startRecording() {
     els.recordingStatus.textContent = "このブラウザでは自分の音声を保存できません。";
   }
   recognition.onstart = () => {
+    restartPending = false;
     state.recording = true; els.record.classList.add("recording");
     els.record.innerHTML = '<i class="fa-solid fa-stop"></i><span>録音停止</span>';
     els.recordingStatus.innerHTML = '<i class="fa-solid fa-circle"></i> 録音中...';
@@ -657,16 +873,27 @@ async function startRecording() {
       showFeedback(transcript, !transcript, "時間切れ");
     } else if (state.stopRequested && !state.answered) {
       showFeedback(state.transcriptParts.join(" "));
-    } else if (!state.answered && !state.stopRequested) {
+    } else if (!state.answered && !state.stopRequested && !restartPending) {
+      restartPending = true;
       window.setTimeout(() => {
+        restartPending = false;
         if (!state.answered && !state.stopRequested && state.recognition === recognition) {
-          recognition.start();
+          try {
+            recognition.start();
+          } catch (error) {
+            if (state.recognition === recognition) {
+              els.recordingStatus.textContent = "音声認識を再開できませんでした。録音ボタンで再試行してください。";
+            }
+          }
         }
       }, 50);
     }
     resetRecordButton();
   };
   try {
+    if (generation !== state.recordingGeneration || state.answered || state.stopRequested || state.recognition !== recognition) {
+      return;
+    }
     recognition.start();
   } catch (error) {
     state.recording = false;
@@ -688,6 +915,19 @@ function showAnswer() {
 }
 
 function nextSentence() {
+  if (state.unit === "question") {
+    if (state.questionIndex < state.questionQueue.length - 1) {
+      state.questionIndex++;
+      render();
+      if (mode() === "exam") {
+        state.autoAdvanceTimer = setTimeout(startExam, 500);
+      }
+    } else {
+      showEnd();
+    }
+    return;
+  }
+
   if (state.sentenceIndex < 6) state.sentenceIndex++;
   else if (state.setIndex < state.questions.length - 1) { state.setIndex++; state.sentenceIndex = 0; }
   else { showEnd(); return; }
@@ -697,17 +937,31 @@ function nextSentence() {
   }
 }
 
+function retrySession() {
+  stopAllTimers();
+  const start = state.sessionStart || { setIndex: 0, sentenceIndex: 0, questionIndex: 0 };
+  state.setIndex = start.setIndex;
+  state.sentenceIndex = start.sentenceIndex;
+  state.questionIndex = start.questionIndex;
+  state.results = [];
+  state.endShown = false;
+  els.empty.classList.add("hidden");
+  els.end.classList.add("hidden");
+  els.quiz.classList.remove("hidden");
+  render();
+}
+
 function showEnd() {
   stopAllTimers(); els.quiz.classList.add("hidden"); els.end.classList.remove("hidden");
   state.endShown = true;
   const results = state.results;
   const total = results.length;
   const average = total ? (results.reduce((sum, item) => sum + item.band, 0) / total).toFixed(1) : "0.0";
-  els.finalStats.textContent = `${total}文完了 / 推定平均 ${average} / 5（公式スコアではありません）`;
+  els.finalStats.textContent = `${total}${state.unit === "question" ? "問" : "文"}完了 / 推定平均 ${average} / 5（公式スコアではありません）`;
   els.setResults.innerHTML = results.map((item) => `
     <article class="result-card">
       <div class="result-card-header">
-        <strong>文${item.index}</strong>
+        <strong>ID ${safe(item.setId)} / 文${item.index}</strong>
         <span class="result-pill band-${item.band}">${item.band}/5</span>
       </div>
       <div class="result-audio-grid">
@@ -753,8 +1007,10 @@ function renderHistory() {
   $("stat-total-attempts").textContent = attempts.length;
   $("stat-accuracy").textContent = `${attempts.length ? Math.round(correct / attempts.length * 100) : 0}%`;
   $("stat-mistakes").textContent = attempts.filter((a) => a.estimatedBand < 4).length;
-  $("history-list").innerHTML = attempts.length ? attempts.slice(0, 30).map((a) =>
-    `<div class="history-item ${a.estimatedBand >= 4 ? "correct" : "incorrect"}"><strong>${a.estimatedBand}/5</strong>　<span class="history-id">ID: ${safe(a.id)}</span>　${safe(a.target)}<br><small>${safe(a.transcript || "スキップ")}　confidence: ${a.confidence == null ? "-" : `${Math.round(a.confidence * 100)}%`}　${new Date(a.timestamp).toLocaleString()}</small></div>`).join("")
+  $("history-list").innerHTML = attempts.length ? attempts.slice(0, 30).map((a) => {
+    const sentenceNumber = Number.isFinite(Number(a.sentenceIndex)) ? Number(a.sentenceIndex) + 1 : "-";
+    return `<div class="history-item ${a.estimatedBand >= 4 ? "correct" : "incorrect"}"><strong>${a.estimatedBand}/5</strong>　<span class="history-id">ID: ${safe(a.id)} / 文${sentenceNumber}</span>　${safe(a.target)}<br><small>${safe(a.transcript || "スキップ")}　confidence: ${a.confidence == null ? "-" : `${Math.round(a.confidence * 100)}%`}　${new Date(a.timestamp).toLocaleString()}</small></div>`;
+  }).join("")
     : '<p class="text-muted">まだ履歴がありません。</p>';
 }
 
@@ -774,10 +1030,13 @@ els.skip.addEventListener("click", () => showFeedback("", true, "スキップ"))
 els.showAnswer.addEventListener("click", showAnswer);
 $("filter-mode").addEventListener("change", applyFilters);
 $("filter-difficulty").addEventListener("change", applyFilters);
+$("filter-unit").addEventListener("change", applyFilters);
+$("filter-voice").addEventListener("change", applyFilters);
 $("btn-jump-id").addEventListener("click", jumpToQuestionId);
 $("question-id-input").addEventListener("keydown", (event) => {
   if (event.key === "Enter") jumpToQuestionId();
 });
+$("btn-retry-session").addEventListener("click", retrySession);
 $("btn-restart").addEventListener("click", applyFilters);
 $("btn-open-history").addEventListener("click", () => { renderHistory(); $("modal-history").classList.remove("hidden"); });
 $("btn-close-history").addEventListener("click", () => $("modal-history").classList.add("hidden"));
